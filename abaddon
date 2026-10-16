@@ -1,0 +1,1849 @@
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local RS = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local VirtualUser = game:GetService("VirtualUser")
+local Debris = game:GetService("Debris")
+local LP = Players.LocalPlayer
+
+if _G.AbaddonCleanup then pcall(_G.AbaddonCleanup) end
+
+local alive = true
+local open = false
+local Conns, Cleanups = {}, {}
+local function track(c) Conns[#Conns + 1] = c return c end
+local function onCleanup(f) Cleanups[#Cleanups + 1] = f end
+local function hook(signal, fn)
+    return track(signal:Connect(function(...) pcall(fn, ...) end))
+end
+local function every(t, fn)
+    task.spawn(function()
+        while alive do
+            pcall(fn)
+            task.wait(t)
+        end
+    end)
+end
+
+local function rgb(r, g, b) return Color3.fromRGB(r, g, b) end
+local C = {
+    Black = rgb(0, 0, 0), White = rgb(255, 255, 255),
+    Outer = rgb(24, 24, 24), Bg = rgb(12, 12, 12), Side = rgb(8, 8, 8),
+    Field = rgb(26, 26, 26), FieldHov = rgb(38, 38, 38), Off = rgb(36, 36, 36),
+    Border = rgb(46, 46, 46), Text = rgb(200, 200, 200), TextDim = rgb(120, 120, 120),
+    TextFaint = rgb(70, 70, 70), Accent = rgb(235, 235, 235),
+}
+local COLORS = {
+    Red = rgb(255, 70, 70), Green = rgb(90, 255, 130), Blue = rgb(80, 140, 255),
+    White = rgb(255, 255, 255), Purple = rgb(180, 100, 255), Yellow = rgb(255, 225, 90),
+    Cyan = rgb(70, 235, 255), Orange = rgb(255, 150, 60), Pink = rgb(255, 120, 200),
+}
+local COLOR_NAMES = { "Red", "Green", "Blue", "White", "Purple", "Yellow", "Cyan", "Orange", "Pink" }
+local function colorOf(n) return COLORS[n] or COLORS.White end
+
+local State = {
+    RageOn = false, RageMode = "Silent", RageHitbox = "Head", RageTarget = "Closest FOV",
+    RageFOV = 1000, RageVisible = false, RagePredict = true,
+    RageAutoFire = false, RageDelay = 0, RageAutoReload = false,
+    AAOn = false, AAMode = "Spin", AASpeed = 30, AAJitter = 90, AAPitch = "None",
+    FakeLag = false, FakeLagOn = 150, FakeLagOff = 60,
+    ThirdPerson = false, TPDistance = 12,
+
+    LegitOn = false, LegitKey = "RMB", LegitBone = "Head", LegitFOV = 120, LegitDraw = true,
+    LegitSmooth = 35, LegitVisible = true, LegitPredict = false, LegitSticky = false,
+    Trigger = false, TriggerDelay = 30, TeamCheck = true,
+    ESP = false, ESPChams = true, ESPFill = 70, ESPBox = false, ESPName = true,
+    ESPHealth = true, ESPDist = true, ESPTracers = false, ESPVisOnly = false,
+    ESPColor = "Red", ESPMax = 2000,
+
+    CustomTime = false, ClockTime = 14, Nighttime = false, Fullbright = false,
+    NoShadows = false, NoFog = false, AmbientOn = false, AmbientColor = "Purple",
+    Weather = "None", WeatherAmount = 50, Thunder = false, Wind = 0,
+    Accessory = "None", AccessoryColor = "White",
+
+    JumpBug = false, JBGain = 25, JBMax = 90, AutoHop = false,
+    SpeedOn = false, Speed = 24, InfJump = false, Noclip = false, Fly = false, FlySpeed = 60,
+    FOVOn = false, FOV = 90,
+    Crosshair = false, CrossSize = 8, CrossGap = 4, CrossColor = "White",
+    UnlockFPS = false, AntiAFK = false, Watermark = true,
+
+    MenuKey = "RightShift", Blur = true,
+}
+local DEFAULTS = {}
+for k, v in pairs(State) do DEFAULTS[k] = v end
+local Reg = {}
+
+local function parentGui()
+    if gethui then
+        local ok, h = pcall(gethui)
+        if ok and h then return h end
+    end
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok and cg then return cg end
+    return LP:WaitForChild("PlayerGui")
+end
+
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do o[k] = v end
+    if parent then o.Parent = parent end
+    return o
+end
+local function stroke(p, col)
+    return new("UIStroke", { Color = col or C.Black, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, p)
+end
+local function gloss(p, b)
+    return new("UIGradient", { Rotation = 90, Color = ColorSequence.new(C.White, b or rgb(130, 130, 130)) }, p)
+end
+local function tween(o, t, props)
+    TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quart), props):Play()
+end
+local FONT = Enum.Font.Code
+local orderN = 0
+local function O() orderN = orderN + 1 return orderN end
+
+local ScreenGui = new("ScreenGui", {
+    Name = "AbaddonUI", ResetOnSpawn = false, IgnoreGuiInset = true,
+    DisplayOrder = 2147483647, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, parentGui())
+_G.AbaddonGui = ScreenGui
+
+_G.AbaddonCleanup = function()
+    alive = false
+    for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
+    for _, f in ipairs(Cleanups) do pcall(f) end
+    Conns, Cleanups = {}, {}
+    pcall(function() ScreenGui:Destroy() end)
+end
+
+local Toasts = new("Frame", {
+    Size = UDim2.fromOffset(340, 300), Position = UDim2.fromOffset(10, 10),
+    BackgroundTransparency = 1, ZIndex = 400,
+}, ScreenGui)
+new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, Toasts)
+local function log(text, col)
+    col = col or C.Text
+    local f = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 20), BackgroundColor3 = C.Bg,
+        BorderSizePixel = 0, LayoutOrder = O(), ZIndex = 401,
+    }, Toasts)
+    stroke(f, C.Black)
+    new("Frame", { Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = 402 }, f)
+    new("TextLabel", {
+        Size = UDim2.new(1, -14, 1, 0), Position = UDim2.fromOffset(10, 0),
+        BackgroundTransparency = 1, Text = text, TextColor3 = col, TextSize = 11, Font = FONT,
+        TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 402,
+    }, f)
+    task.delay(4, function() if f.Parent then f:Destroy() end end)
+end
+local function logOk(t) log(t, rgb(140, 220, 100)) end
+local function logWarn(t) log(t, rgb(220, 175, 80)) end
+local function logErr(t) log(t, rgb(220, 80, 80)) end
+
+local Overlay = new("Frame", {
+    Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.Black,
+    BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 10,
+}, ScreenGui)
+local PW, PH, SB = 640, 440, 120
+
+local Panel = new("CanvasGroup", {
+    Size = UDim2.fromOffset(PW, PH), Position = UDim2.fromScale(0.5, 0.5), AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = C.Outer, BorderSizePixel = 0, Visible = false, Active = true, ZIndex = 100,
+    GroupTransparency = 1,
+}, ScreenGui)
+stroke(Panel, C.Black)
+
+local Body = new("Frame", {
+    Position = UDim2.fromOffset(5, 5), Size = UDim2.new(1, -10, 1, -10),
+    BackgroundColor3 = C.Bg, BorderSizePixel = 0, ZIndex = 2,
+}, Panel)
+stroke(Body, C.Black)
+
+local topLine = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = C.White, BorderSizePixel = 0, ZIndex = 10,
+}, Body)
+new("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, rgb(60, 60, 60)),
+        ColorSequenceKeypoint.new(0.5, C.White),
+        ColorSequenceKeypoint.new(1, rgb(60, 60, 60)),
+    }),
+}, topLine)
+
+local TopBar = new("Frame", {
+    Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 26),
+    BackgroundTransparency = 1, Active = true, ZIndex = 5,
+}, Body)
+new("TextLabel", {
+    Size = UDim2.fromOffset(70, 26), Position = UDim2.fromOffset(10, 0), BackgroundTransparency = 1, RichText = true,
+    Text = '<font color="rgb(255,255,255)">ab</font><font color="rgb(110,110,110)">addon</font>',
+    TextSize = 15, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 6,
+}, TopBar)
+new("TextLabel", {
+    Size = UDim2.fromOffset(80, 26), Position = UDim2.fromOffset(84, 1), BackgroundTransparency = 1,
+    Text = "hvh edition", TextColor3 = C.TextFaint, TextSize = 10, Font = FONT,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 6,
+}, TopBar)
+local CloseBtn = new("TextButton", {
+    Size = UDim2.fromOffset(20, 18), Position = UDim2.new(1, -28, 0, 4), BackgroundColor3 = C.Field, Text = "x",
+    TextColor3 = C.TextDim, TextSize = 12, Font = FONT, AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 8,
+}, TopBar)
+stroke(CloseBtn, C.Black) gloss(CloseBtn)
+CloseBtn.MouseEnter:Connect(function() tween(CloseBtn, 0.1, { TextColor3 = C.White, BackgroundColor3 = C.FieldHov }) end)
+CloseBtn.MouseLeave:Connect(function() tween(CloseBtn, 0.1, { TextColor3 = C.TextDim, BackgroundColor3 = C.Field }) end)
+
+new("Frame", { Position = UDim2.fromOffset(0, 28), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = C.Black, BorderSizePixel = 0, ZIndex = 3 }, Body)
+new("Frame", { Position = UDim2.fromOffset(0, 29), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = C.Border, BorderSizePixel = 0, ZIndex = 3 }, Body)
+
+local Sidebar = new("Frame", {
+    Size = UDim2.new(0, SB, 1, -30), Position = UDim2.fromOffset(0, 30),
+    BackgroundColor3 = C.Side, BorderSizePixel = 0, ZIndex = 2,
+}, Body)
+new("Frame", { Position = UDim2.new(1, -1, 0, 0), Size = UDim2.new(0, 1, 1, 0), BackgroundColor3 = C.Border, BorderSizePixel = 0, ZIndex = 3 }, Sidebar)
+local TabList = new("Frame", {
+    Size = UDim2.new(1, -14, 1, -64), Position = UDim2.fromOffset(6, 8), BackgroundTransparency = 1, ZIndex = 3,
+}, Sidebar)
+new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, TabList)
+
+local Card = new("Frame", {
+    Size = UDim2.new(1, -14, 0, 38), Position = UDim2.new(0, 6, 1, -46),
+    BackgroundColor3 = C.Bg, BorderSizePixel = 0, ZIndex = 3,
+}, Sidebar)
+stroke(Card, C.Black)
+local av = new("ImageLabel", {
+    Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(5, 5), BackgroundColor3 = C.Field,
+    BorderSizePixel = 0, ZIndex = 4, ImageColor3 = rgb(150, 150, 150),
+    Image = "rbxthumb://type=AvatarHeadShot&id=" .. LP.UserId .. "&w=150&h=150",
+}, Card)
+stroke(av, C.Black)
+new("TextLabel", {
+    Size = UDim2.new(1, -40, 0, 14), Position = UDim2.fromOffset(38, 4), BackgroundTransparency = 1,
+    Text = "@" .. LP.Name, TextColor3 = C.Text, TextSize = 10, Font = FONT,
+    TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 4,
+}, Card)
+new("TextLabel", {
+    Size = UDim2.new(1, -40, 0, 12), Position = UDim2.fromOffset(38, 20), BackgroundTransparency = 1,
+    Text = "ACTIVE", TextColor3 = C.TextFaint, TextSize = 9, Font = FONT,
+    TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+}, Card)
+
+local Content = new("Frame", {
+    Size = UDim2.new(1, -SB, 1, -30), Position = UDim2.fromOffset(SB, 30), BackgroundTransparency = 1, ZIndex = 2,
+}, Body)
+
+do
+    local dragging, ds, sp
+    TopBar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging, ds, sp = true, i.Position, Panel.Position
+            i.Changed:Connect(function() if i.UserInputState == Enum.UserInputState.End then dragging = false end end)
+        end
+    end)
+    track(UIS.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - ds
+            Panel.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+        end
+    end))
+end
+
+local Tabs, Pages = {}, {}
+local function setTab(name)
+    for n, t in pairs(Tabs) do
+        local a = n == name
+        t.lbl.TextColor3 = a and C.White or C.TextDim
+        t.bar.Visible = a
+        Pages[n].Visible = a
+    end
+end
+local function createTab(name, order)
+    local btn = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, Text = "",
+        AutoButtonColor = false, LayoutOrder = order, ZIndex = 4,
+    }, TabList)
+    local bar = new("Frame", {
+        Size = UDim2.fromOffset(2, 14), Position = UDim2.new(0, 0, 0.5, -7),
+        BackgroundColor3 = C.White, BorderSizePixel = 0, Visible = false, ZIndex = 5,
+    }, btn)
+    local lbl = new("TextLabel", {
+        Size = UDim2.new(1, -16, 1, 0), Position = UDim2.fromOffset(12, 0), BackgroundTransparency = 1,
+        Text = name:lower(), TextColor3 = C.TextDim, TextSize = 12, Font = FONT,
+        TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 5,
+    }, btn)
+    btn.MouseEnter:Connect(function() if Pages[name] and Pages[name].Visible then return end tween(lbl, 0.08, { TextColor3 = C.Text }) end)
+    btn.MouseLeave:Connect(function() if Pages[name] and Pages[name].Visible then return end tween(lbl, 0.1, { TextColor3 = C.TextDim }) end)
+    local page = new("ScrollingFrame", {
+        Size = UDim2.new(1, -16, 1, -16), Position = UDim2.fromOffset(8, 8),
+        BackgroundTransparency = 1, BorderSizePixel = 0, Visible = false, ZIndex = 3,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.Accent, AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        CanvasSize = UDim2.new(), ElasticBehavior = Enum.ElasticBehavior.Never,
+    }, Content)
+    new("UIListLayout", { Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder }, page)
+    new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 10) }, page)
+    Tabs[name], Pages[name] = { lbl = lbl, bar = bar }, page
+    btn.MouseButton1Click:Connect(function() setTab(name) end)
+    return page
+end
+
+local function section(page, text)
+    local outer = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1, LayoutOrder = O(), ZIndex = 3,
+    }, page)
+    local box = new("Frame", {
+        Position = UDim2.fromOffset(0, 7), Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, ZIndex = 3,
+    }, outer)
+    stroke(box, C.Border)
+    new("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, box)
+    new("UIPadding", {
+        PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 8),
+        PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+    }, box)
+    local t = new("TextLabel", {
+        Size = UDim2.fromOffset(0, 14), AutomaticSize = Enum.AutomaticSize.X, Position = UDim2.fromOffset(8, 0),
+        BackgroundColor3 = C.Bg, BorderSizePixel = 0, Text = text:lower(),
+        TextColor3 = C.White, TextSize = 11, Font = FONT, ZIndex = 6,
+    }, outer)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4) }, t)
+    return box
+end
+
+local function row(parent, h)
+    return new("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 1, LayoutOrder = O(), ZIndex = 4 }, parent)
+end
+
+local function toggle(parent, label, key, cb)
+    local r = row(parent, 20)
+    local box = new("Frame", {
+        Size = UDim2.fromOffset(10, 10), Position = UDim2.fromOffset(0, 5),
+        BackgroundColor3 = State[key] and C.Accent or C.Off, BorderSizePixel = 0, ZIndex = 5,
+    }, r)
+    stroke(box, C.Black) gloss(box)
+    local lbl = new("TextLabel", {
+        Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(18, 0), BackgroundTransparency = 1,
+        Text = label, TextColor3 = C.Text, TextSize = 11, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+    }, r)
+    local hit = new("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", ZIndex = 6 }, r)
+    hit.MouseEnter:Connect(function() tween(lbl, 0.08, { TextColor3 = C.White }) end)
+    hit.MouseLeave:Connect(function() tween(lbl, 0.1, { TextColor3 = C.Text }) end)
+    local function apply(v)
+        State[key] = v
+        tween(box, 0.1, { BackgroundColor3 = v and C.Accent or C.Off })
+        if cb then cb(v) end
+    end
+    Reg[key] = apply
+    hit.MouseButton1Click:Connect(function() apply(not State[key]) end)
+end
+
+local function slider(parent, label, min, max, key, cb)
+    local r = row(parent, 32)
+    new("TextLabel", {
+        Size = UDim2.new(1, 0, 0, 14), BackgroundTransparency = 1, Text = label, TextColor3 = C.Text,
+        TextSize = 11, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+    }, r)
+    local tr = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 10), Position = UDim2.fromOffset(0, 18),
+        BackgroundColor3 = C.Field, BorderSizePixel = 0, ZIndex = 4,
+    }, r)
+    stroke(tr, C.Black)
+    local fill = new("Frame", {
+        Size = UDim2.fromScale((State[key] - min) / (max - min), 1), BackgroundColor3 = C.Accent, BorderSizePixel = 0, ZIndex = 5,
+    }, tr)
+    gloss(fill)
+    local val = new("TextLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = tostring(State[key]),
+        TextColor3 = C.White, TextSize = 10, Font = FONT, TextStrokeTransparency = 0.3, ZIndex = 7,
+    }, tr)
+    local function setV(v)
+        v = math.clamp(math.floor(v + 0.5), min, max)
+        State[key] = v
+        fill.Size = UDim2.fromScale((v - min) / (max - min), 1)
+        val.Text = tostring(v)
+        if cb then cb(v) end
+    end
+    Reg[key] = setV
+    local dragging = false
+    local function setX(x)
+        local rel = math.clamp((x - tr.AbsolutePosition.X) / math.max(1, tr.AbsoluteSize.X), 0, 1)
+        setV(min + (max - min) * rel)
+    end
+    local hit = new("TextButton", {
+        Size = UDim2.new(1, 0, 0, 22), Position = UDim2.fromOffset(0, 14), BackgroundTransparency = 1, Text = "", ZIndex = 8,
+    }, r)
+    hit.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            setX(i.Position.X)
+        end
+    end)
+    track(UIS.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            setX(i.Position.X)
+        end
+    end))
+    track(UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+end
+
+local function button(parent, label, cb, danger)
+    local r = row(parent, 22)
+    local b = new("TextButton", {
+        Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.Field, Text = label,
+        TextColor3 = danger and rgb(220, 80, 80) or C.TextDim, TextSize = 11, Font = FONT,
+        AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 6,
+    }, r)
+    stroke(b, C.Black) gloss(b, rgb(170, 170, 170))
+    b.MouseEnter:Connect(function()
+        tween(b, 0.1, { BackgroundColor3 = C.FieldHov, TextColor3 = danger and rgb(255, 100, 100) or C.White })
+    end)
+    b.MouseLeave:Connect(function()
+        tween(b, 0.12, { BackgroundColor3 = C.Field, TextColor3 = danger and rgb(220, 80, 80) or C.TextDim })
+    end)
+    b.MouseButton1Click:Connect(function() pcall(cb, b) end)
+    return b
+end
+
+local function info(parent, text, h)
+    local r = row(parent, h or 30)
+    return new("TextLabel", {
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = text, TextColor3 = C.TextDim,
+        TextSize = 10, Font = FONT, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 4,
+    }, r)
+end
+
+local closeOpenDD
+local function dropdown(parent, label, options, key, cb)
+    local r = row(parent, 22)
+    r.ClipsDescendants = true
+    new("TextLabel", {
+        Size = UDim2.new(1, -118, 0, 22), BackgroundTransparency = 1, Text = label, TextColor3 = C.Text,
+        TextSize = 11, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 4,
+    }, r)
+
+    local idx = table.find(options, State[key]) or 1
+    State[key] = options[idx]
+
+    local btn = new("TextButton", {
+        Size = UDim2.fromOffset(112, 18), Position = UDim2.new(1, -112, 0, 2), BackgroundColor3 = C.Field,
+        Text = options[idx], TextColor3 = C.Accent, TextSize = 10, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left,
+        AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 6,
+    }, r)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 16) }, btn)
+    stroke(btn, C.Black) gloss(btn, rgb(170, 170, 170))
+    local arrow = new("TextLabel", {
+        Size = UDim2.fromOffset(14, 18), Position = UDim2.new(1, -14, 0, 2), BackgroundTransparency = 1,
+        Text = "v", TextColor3 = C.TextDim, TextSize = 9, Font = FONT, ZIndex = 7,
+    }, r)
+
+    local H = #options * 18
+    local list = new("Frame", {
+        Size = UDim2.fromOffset(112, H), Position = UDim2.new(1, -112, 0, 24),
+        BackgroundColor3 = rgb(10, 10, 10), BackgroundTransparency = 0.12, BorderSizePixel = 0, Visible = false, ZIndex = 9,
+    }, r)
+    stroke(list, C.Border)
+
+    local optBtns = {}
+    local function paint()
+        for i, b in ipairs(optBtns) do b.TextColor3 = (i == idx) and C.Accent or C.TextDim end
+    end
+
+    local isOpen = false
+    local function close()
+        if not isOpen then return end
+        isOpen = false
+        arrow.Text = "v"
+        tween(r, 0.12, { Size = UDim2.new(1, 0, 0, 22) })
+        task.delay(0.13, function() if not isOpen then list.Visible = false end end)
+    end
+    local function openDD()
+        if closeOpenDD and closeOpenDD ~= close then closeOpenDD() end
+        closeOpenDD = close
+        isOpen = true
+        arrow.Text = "^"
+        list.Visible = true
+        tween(r, 0.15, { Size = UDim2.new(1, 0, 0, 24 + H + 2) })
+    end
+
+    local function choose(i, fire)
+        idx = i
+        State[key] = options[i]
+        btn.Text = options[i]
+        paint()
+        if fire and cb then cb(options[i]) end
+    end
+
+    for i, o in ipairs(options) do
+        local b = new("TextButton", {
+            Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, (i - 1) * 18),
+            BackgroundColor3 = C.FieldHov, BackgroundTransparency = 1, Text = o, TextColor3 = C.TextDim,
+            TextSize = 10, Font = FONT, TextXAlignment = Enum.TextXAlignment.Left,
+            AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 10,
+        }, list)
+        new("UIPadding", { PaddingLeft = UDim.new(0, 6) }, b)
+        b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.4 end)
+        b.MouseLeave:Connect(function() b.BackgroundTransparency = 1 end)
+        b.MouseButton1Click:Connect(function()
+            choose(i, true)
+            close()
+        end)
+        optBtns[i] = b
+    end
+    paint()
+    Reg[key] = function(v)
+        local i = table.find(options, v)
+        if i then choose(i, true) end
+    end
+    btn.MouseButton1Click:Connect(function() if isOpen then close() else openDD() end end)
+end
+
+local RagePage = createTab("Rage", 1)
+local LegitPage = createTab("Legit", 2)
+local WorldPage = createTab("World", 3)
+local MiscPage = createTab("Misc", 4)
+local SetPage = createTab("Settings", 5)
+setTab("Rage")
+
+--========================================================================
+-- PART 2: features, pages, settings, boot
+--========================================================================
+local M = {}   -- общие хелперы (один top-level local, чтобы не упереться в лимит 200)
+
+local function addState(k, v) State[k] = v DEFAULTS[k] = v end
+addState("RageSkipFF", true)
+addState("RageHB", false)
+addState("RageHBSize", 6)
+addState("RemoteLog", false)
+
+local THUNDER_SOUND_ID = ""            -- сюда можно вписать rbxassetid:// со звуком грома
+local CONFIG_FILE = "abaddon_hvh.json"
+
+do local ok, mod = pcall(function() return require(RS:WaitForChild("SignalManager", 3)) end)
+    if ok and type(mod) == "table" and type(mod.Fire) == "function" then M.SM = mod end
+end
+
+----------------------------------------------------------------------
+-- helpers
+----------------------------------------------------------------------
+do
+    M.layer = new("Frame", { Name = "Layer", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2, Active = false }, ScreenGui)
+
+    function M.cam() return workspace.CurrentCamera end
+
+    function M.charParts(plr)
+        local ch = plr.Character
+        if not ch then return end
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        local root = ch:FindFirstChild("HumanoidRootPart")
+        if hum and root and hum.Health > 0 then return ch, hum, root end
+    end
+
+    function M.isEnemy(plr)
+        if plr == LP then return false end
+        if State.TeamCheck and LP.Team and plr.Team and plr.Team == LP.Team then return false end
+        return true
+    end
+
+    local R6 = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }
+    function M.pickPart(ch, mode, ref)
+        if mode == "Head" then return ch:FindFirstChild("Head") end
+        if mode == "Torso" then return ch:FindFirstChild("Torso") or ch:FindFirstChild("HumanoidRootPart") end
+        if mode == "Root" then return ch:FindFirstChild("HumanoidRootPart") end
+        if mode == "Random" then
+            return ch:FindFirstChild(R6[math.random(#R6)]) or ch:FindFirstChild("HumanoidRootPart")
+        end
+        local c = M.cam()
+        local best, bd
+        for _, n in ipairs(R6) do
+            local p = ch:FindFirstChild(n)
+            if p then
+                local sp = c:WorldToViewportPoint(p.Position)
+                local d = (Vector2.new(sp.X, sp.Y) - ref).Magnitude
+                if not bd or d < bd then best, bd = p, d end
+            end
+        end
+        return best
+    end
+
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.IgnoreWater = true
+    function M.ignoreList(extra)
+        local ign = { M.cam() }
+        if LP.Character then ign[#ign + 1] = LP.Character end
+        local bs = workspace:FindFirstChild("bulletStorage")
+        if bs then ign[#ign + 1] = bs end
+        if extra then ign[#ign + 1] = extra end
+        return ign
+    end
+    function M.visible(part, ch)
+        local c = M.cam()
+        if not c then return false end
+        rp.FilterDescendantsInstances = M.ignoreList()
+        local o = c.CFrame.Position
+        local res = workspace:Raycast(o, part.Position - o, rp)
+        return res == nil or res.Instance:IsDescendantOf(ch)
+    end
+
+    -- o: fov, hitbox, sort, visible, ref(Vector2), skipFF
+    function M.findTarget(o)
+        local c = M.cam()
+        if not c then return end
+        local best, bs
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if M.isEnemy(plr) then
+                local ch, hum, root = M.charParts(plr)
+                if ch and not (o.skipFF and ch:FindFirstChildOfClass("ForceField")) then
+                    local part = M.pickPart(ch, o.hitbox, o.ref)
+                    if part then
+                        local sp = c:WorldToViewportPoint(part.Position)
+                        if sp.Z > 0 then
+                            local d2 = (Vector2.new(sp.X, sp.Y) - o.ref).Magnitude
+                            if d2 <= o.fov and (not o.visible or M.visible(part, ch)) then
+                                local dist = (part.Position - c.CFrame.Position).Magnitude
+                                local score = d2
+                                if o.sort == "Closest Distance" then score = dist
+                                elseif o.sort == "Lowest Health" then score = hum.Health
+                                elseif o.sort == "Highest Health" then score = -hum.Health end
+                                if not bs or score < bs then
+                                    best, bs = { plr = plr, ch = ch, hum = hum, root = root, part = part, dist = dist }, score
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    function M.keyHeld(name)
+        if name == "Always" then return true end
+        if name == "RMB" then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) end
+        if name == "LMB" then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) end
+        if name == "MB3" then return UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton3) end
+        local ok, kc = pcall(function() return Enum.KeyCode[name] end)
+        return ok and kc ~= nil and UIS:IsKeyDown(kc)
+    end
+
+    -- стрельба через игровой SignalManager (так же, как ContextAction игры)
+    function M.fireWeapon(state)
+        if M.SM then pcall(M.SM.Fire, "FireWeapon", state) return end
+        local c = M.cam()
+        if not c then return end
+        local vs = c.ViewportSize
+        pcall(function()
+            game:GetService("VirtualInputManager"):SendMouseButtonEvent(vs.X / 2, vs.Y / 2, 0, state == Enum.UserInputState.Begin, game, 0)
+        end)
+    end
+    function M.shoot()
+        M.fireWeapon(Enum.UserInputState.Begin)
+        task.delay(0.03, function() M.fireWeapon(Enum.UserInputState.End) end)
+    end
+end
+
+----------------------------------------------------------------------
+-- RAGE: цель, auto-fire, silent (патч Cast), camera-режим, hitbox expander
+----------------------------------------------------------------------
+do
+    M.rageT, M.rageTime = nil, 0
+    local lastFire, lastSeen, lastReload = 0, 0, 0
+
+    hook(RunService.Heartbeat, function()
+        if not State.RageOn or open then M.rageT = nil return end
+        local c = M.cam()
+        if not c then return end
+        local t = M.findTarget({
+            fov = State.RageFOV, hitbox = State.RageHitbox, sort = State.RageTarget,
+            visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF,
+        })
+        local now = os.clock()
+        M.rageT, M.rageTime = t, now
+        if t then
+            lastSeen = now
+            if State.RageAutoFire and now - lastFire >= State.RageDelay / 1000 then
+                lastFire = now
+                M.shoot()
+            end
+        elseif State.RageAutoReload and now - lastSeen > 0.8 and now - lastReload > 2.5 and M.SM then
+            lastReload = now
+            pcall(M.SM.Fire, "ReloadWeapon")
+        end
+    end)
+
+    pcall(function()
+        RunService:BindToRenderStep("AbaddonRageCam", Enum.RenderPriority.Camera.Value + 1, function()
+            pcall(function()
+                if not State.RageOn or open or State.RageMode == "Silent" then return end
+                local t = M.rageT
+                if not t or os.clock() - M.rageTime > 0.2 or not t.part.Parent then return end
+                local c = M.cam()
+                local pos = t.part.Position
+                if State.RagePredict then pos += t.part.AssemblyLinearVelocity * 0.06 end
+                c.CFrame = CFrame.lookAt(c.CFrame.Position, pos)
+            end)
+        end)
+    end)
+    onCleanup(function() pcall(function() RunService:UnbindFromRenderStep("AbaddonRageCam") end) end)
+
+    -- silent aim: патчим Cast у модуля снарядов. Подменяется точка прицеливания (с учётом
+    -- гравитации, ветра, скорости пули и движения цели), всё остальное делает сама игра.
+    local patched, searching, mod, orig = false, false, nil, nil
+    local PRI = { "cast", "bullet", "proj", "ray", "ballist", "gun", "weapon" }
+    local function prio(m)
+        local n = m.Name:lower()
+        for i, k in ipairs(PRI) do if n:find(k, 1, true) then return i end end
+        return 99
+    end
+    local function search()
+        local pool = {}
+        if getloadedmodules then
+            pcall(function() for _, m in ipairs(getloadedmodules()) do pool[#pool + 1] = m end end)
+        end
+        if #pool == 0 then
+            for _, root in ipairs({ RS, LP:FindFirstChild("PlayerScripts"), LP:FindFirstChild("PlayerGui"), game:GetService("ReplicatedFirst") }) do
+                if root then
+                    for _, d in ipairs(root:GetDescendants()) do
+                        if d:IsA("ModuleScript") then pool[#pool + 1] = d end
+                    end
+                end
+            end
+        end
+        table.sort(pool, function(a, b) return prio(a) < prio(b) end)
+        for _, m in ipairs(pool) do
+            if m:IsA("ModuleScript") and not m:GetFullName():find("^CoreGui") then
+                local ok, t = pcall(require, m)
+                if ok and type(t) == "table" and type(rawget(t, "Cast")) == "function" and type(rawget(t, "new")) == "function" then
+                    return t, m
+                end
+            end
+        end
+    end
+
+    function M.redirect(self, origin, target, speed)
+        if not (State.RageOn and State.RageMode ~= "Camera") then return end
+        if typeof(origin) ~= "Vector3" or type(speed) ~= "number" or speed <= 0 then return end
+        local ch, _, root = M.charParts(LP)
+        if not ch or (origin - root.Position).Magnitude > 16 then return end   -- только наши выстрелы
+        local t = M.rageT
+        if not t or os.clock() - M.rageTime > 0.25 or not t.part.Parent then
+            local c = M.cam()
+            if not c then return end
+            t = M.findTarget({
+                fov = State.RageFOV, hitbox = State.RageHitbox, sort = State.RageTarget,
+                visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF,
+            })
+        end
+        if not t then return end
+        local spd = speed * 20.224489795918366
+        local g = type(self.Gravity) == "number" and self.Gravity or 0
+        local w = typeof(self.Wind) == "Vector3" and self.Wind or Vector3.zero
+        local a = Vector3.new(w.X, -g * workspace.Gravity, w.Z)
+        local vel = State.RagePredict and t.part.AssemblyLinearVelocity or Vector3.zero
+        local T = t.part.Position
+        local tt = (T - origin).Magnitude / spd
+        for _ = 1, 4 do
+            local d = (T + vel * tt) - origin - a * (0.5 * tt * tt)
+            tt = d.Magnitude / spd
+        end
+        local d = (T + vel * tt) - origin - a * (0.5 * tt * tt)
+        if d.Magnitude < 0.05 then return end
+        return origin + d
+    end
+
+    function M.ensureSilent()
+        if patched or searching then return end
+        if not (State.RageOn and State.RageMode ~= "Camera") then return end
+        searching = true
+        task.spawn(function()
+            local t, m = search()
+            searching = false
+            if not t then logWarn("Silent: projectile module not found, use Camera mode") return end
+            local old = t.Cast
+            mod, orig = t, old
+            t.Cast = function(self, p6, origin, target, speed)
+                if alive then
+                    local ok, nt = pcall(M.redirect, self, origin, target, speed)
+                    if ok and nt then target = nt end
+                end
+                return old(self, p6, origin, target, speed)
+            end
+            patched = true
+            logOk("Silent: patched " .. m.Name)
+        end)
+    end
+    onCleanup(function() if patched and mod and orig then pcall(function() mod.Cast = orig end) end end)
+
+    -- hitbox expander (клиентский рейкаст пули будет попадать в увеличенные части)
+    local saved = {}
+    local function restoreOne(p)
+        local s = saved[p]
+        saved[p] = nil
+        if s and p.Parent then pcall(function() p.Size, p.Transparency, p.CanCollide = s.Size, s.Transparency, s.CanCollide end) end
+    end
+    local function restoreAll() for p in pairs(saved) do restoreOne(p) end end
+    onCleanup(restoreAll)
+    every(0.2, function()
+        if not (State.RageOn and State.RageHB) then
+            if next(saved) then restoreAll() end
+            return
+        end
+        local sz, seen = State.RageHBSize, {}
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if M.isEnemy(plr) and plr.Character then
+                for _, n in ipairs({ "Head", "HumanoidRootPart" }) do
+                    local p = plr.Character:FindFirstChild(n)
+                    if p then
+                        seen[p] = true
+                        if not saved[p] then saved[p] = { Size = p.Size, Transparency = p.Transparency, CanCollide = p.CanCollide } end
+                        p.Size = Vector3.new(sz, sz, sz)
+                        p.Transparency = 0.8
+                        p.CanCollide = false
+                    end
+                end
+            end
+        end
+        for p in pairs(saved) do if not seen[p] then restoreOne(p) end end
+    end)
+end
+
+----------------------------------------------------------------------
+-- RAGE: anti-aim (R6), fake lag, third person
+----------------------------------------------------------------------
+do
+    local ang, lastFlip, flip, lastRand, rnd = 0, 0, 1, 0, 0
+    local rj, rjC0
+    local wasOn = false
+    local function restore()
+        if rj and rj.Parent and rjC0 then rj.C0 = rjC0 end
+        rj, rjC0 = nil, nil
+        local _, hum = M.charParts(LP)
+        if hum then hum.AutoRotate = true end
+    end
+    onCleanup(restore)
+
+    hook(RunService.Heartbeat, function(dt)
+        if not State.AAOn then
+            if wasOn then wasOn = false restore() end
+            return
+        end
+        wasOn = true
+        local ch, hum, root = M.charParts(LP)
+        local c = M.cam()
+        if not ch or not c then return end
+        hum.AutoRotate = false
+        local now = os.clock()
+        local look = c.CFrame.LookVector
+        local base = math.atan2(-look.X, -look.Z)
+        if now - lastFlip > 0.07 then lastFlip, flip = now, -flip end
+        local mode, yaw = State.AAMode, 0
+        if mode == "Spin" then
+            ang += math.rad(State.AASpeed) * dt * 60
+            yaw = ang
+        elseif mode == "Spin + Jitter" then
+            ang += math.rad(State.AASpeed) * dt * 60
+            yaw = ang + math.rad(State.AAJitter) * flip
+        elseif mode == "Jitter" then
+            yaw = base + math.pi + math.rad(State.AAJitter) * flip
+        elseif mode == "Backward" then
+            yaw = base + math.pi
+        elseif mode == "Sideways" then
+            yaw = base + (math.floor(now / 0.5) % 2 == 0 and 1 or -1) * math.pi / 2
+        else
+            if now - lastRand > 0.03 then lastRand, rnd = now, math.random() * math.pi * 2 end
+            yaw = rnd
+        end
+        root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, yaw, 0)
+        root.AssemblyAngularVelocity = Vector3.zero
+
+        -- pitch: наклон торса через RootJoint (R6)
+        local pm = State.AAPitch
+        local j = root:FindFirstChild("RootJoint")
+        if pm ~= "None" and j and j:IsA("Motor6D") then
+            if rj ~= j then rj, rjC0 = j, j.C0 end
+            local p
+            if pm == "Down" then p = -75
+            elseif pm == "Up" then p = 75
+            elseif pm == "Jitter" then p = 70 * flip
+            else p = (now * 600) % 360 end
+            j.C0 = rjC0 * CFrame.Angles(math.rad(p), 0, 0)
+        elseif rj then
+            if rj.Parent and rjC0 then rj.C0 = rjC0 end
+            rj, rjC0 = nil, nil
+        end
+    end)
+end
+
+do
+    local token = 0
+    local function lim(v)
+        return (pcall(function() game:GetService("NetworkClient"):SetOutgoingKBPSLimit(v) end))
+    end
+    function M.setFakeLag(on)
+        token += 1
+        local my = token
+        if not on then lim(math.huge) return end
+        task.spawn(function()
+            while alive and State.FakeLag and token == my do
+                if not lim(1) then
+                    logWarn("Fake lag: not supported by this executor")
+                    if Reg.FakeLag then Reg.FakeLag(false) end
+                    break
+                end
+                task.wait(math.max(State.FakeLagOn, 20) / 1000)
+                lim(math.huge)
+                task.wait(math.max(State.FakeLagOff, 20) / 1000)
+            end
+            if token == my then lim(math.huge) end
+        end)
+    end
+    onCleanup(function() token += 1 lim(math.huge) end)
+end
+
+do
+    local saved, lastFix = nil, 0
+    local function tpStep()
+        if State.ThirdPerson then
+            if not saved then saved = { LP.CameraMode, LP.CameraMinZoomDistance, LP.CameraMaxZoomDistance } end
+            local d = State.TPDistance
+            LP.CameraMode = Enum.CameraMode.Classic
+            LP.CameraMinZoomDistance = math.min(LP.CameraMinZoomDistance, d)
+            LP.CameraMaxZoomDistance = d
+            LP.CameraMinZoomDistance = d
+            if os.clock() - lastFix > 0.1 and LP.Character then
+                lastFix = os.clock()
+                for _, p in ipairs(LP.Character:GetDescendants()) do
+                    if p:IsA("BasePart") and p.LocalTransparencyModifier ~= 0 then p.LocalTransparencyModifier = 0 end
+                end
+            end
+        elseif saved then
+            LP.CameraMinZoomDistance = 0.5
+            LP.CameraMaxZoomDistance = saved[3]
+            LP.CameraMinZoomDistance = saved[2]
+            LP.CameraMode = saved[1]
+            saved = nil
+        end
+    end
+    pcall(function()
+        RunService:BindToRenderStep("AbaddonTP", Enum.RenderPriority.Camera.Value + 1, function() pcall(tpStep) end)
+    end)
+    onCleanup(function()
+        pcall(function() RunService:UnbindFromRenderStep("AbaddonTP") end)
+        if saved then pcall(function()
+            LP.CameraMinZoomDistance = 0.5
+            LP.CameraMaxZoomDistance = saved[3]
+            LP.CameraMinZoomDistance = saved[2]
+            LP.CameraMode = saved[1]
+        end) end
+    end)
+end
+
+----------------------------------------------------------------------
+-- LEGIT: aimbot, trigger, fov circle
+----------------------------------------------------------------------
+do
+    local circ = new("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Visible = false, ZIndex = 3, Active = false,
+    }, M.layer)
+    new("UICorner", { CornerRadius = UDim.new(1, 0) }, circ)
+    new("UIStroke", { Color = C.White, Thickness = 1, Transparency = 0.2 }, circ)
+
+    local lock, trigAt, lastTrig = nil, nil, 0
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local function legitStep(dt)
+        local c = M.cam()
+        if not c then return end
+        local mouse = UIS:GetMouseLocation()
+        circ.Visible = State.LegitOn and State.LegitDraw and not open
+        if circ.Visible then
+            circ.Size = UDim2.fromOffset(State.LegitFOV * 2, State.LegitFOV * 2)
+            circ.Position = UDim2.fromOffset(mouse.X, mouse.Y)
+        end
+        if open or UIS:GetFocusedTextBox() then return end
+
+        if State.LegitOn and M.keyHeld(State.LegitKey) then
+            local t
+            if State.LegitSticky and lock and lock.part.Parent and (M.charParts(lock.plr)) then t = lock else lock = nil end
+            if not t then
+                t = M.findTarget({
+                    fov = State.LegitFOV, hitbox = State.LegitBone, sort = "Closest FOV",
+                    visible = State.LegitVisible, ref = mouse,
+                })
+                if State.LegitSticky then lock = t end
+            end
+            if t then
+                local pos = t.part.Position
+                if State.LegitPredict then pos += t.part.AssemblyLinearVelocity * math.clamp(t.dist / 900, 0.03, 0.25) end
+                local alpha = math.clamp((100 - State.LegitSmooth) / 100, 0.02, 1)
+                alpha = 1 - (1 - alpha) ^ (dt * 60)
+                c.CFrame = c.CFrame:Lerp(CFrame.lookAt(c.CFrame.Position, pos), alpha)
+            end
+        else
+            lock = nil
+        end
+
+        if State.Trigger then
+            local ray = c:ViewportPointToRay(mouse.X, mouse.Y)
+            rp.FilterDescendantsInstances = M.ignoreList()
+            local res = workspace:Raycast(ray.Origin, ray.Direction * 2000, rp)
+            local hit = false
+            if res then
+                local m = res.Instance:FindFirstAncestorOfClass("Model")
+                local plr = m and Players:GetPlayerFromCharacter(m)
+                hit = plr ~= nil and M.isEnemy(plr) and (M.charParts(plr)) ~= nil
+            end
+            local now = os.clock()
+            if hit then
+                trigAt = trigAt or now
+                if now - trigAt >= State.TriggerDelay / 1000 and now - lastTrig >= 0.05 then
+                    lastTrig = now
+                    M.shoot()
+                end
+            else
+                trigAt = nil
+            end
+        end
+    end
+    pcall(function()
+        RunService:BindToRenderStep("AbaddonLegit", Enum.RenderPriority.Camera.Value + 1, function(dt) pcall(legitStep, dt) end)
+    end)
+    onCleanup(function() pcall(function() RunService:UnbindFromRenderStep("AbaddonLegit") end) end)
+end
+
+----------------------------------------------------------------------
+-- LEGIT: ESP / wallhack (рамки на Frame + Highlight)
+----------------------------------------------------------------------
+do
+    local layer = new("Frame", { Name = "ESPLayer", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 2, Active = false }, ScreenGui)
+    local objs = {}
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+
+    local function thick(p, col, th)
+        return new("UIStroke", { Color = col, Thickness = th, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, p)
+    end
+    local function mk()
+        local o = {}
+        o.outline = new("Frame", { BackgroundTransparency = 1, Visible = false, ZIndex = 2, Active = false }, layer)
+        thick(o.outline, C.Black, 3)
+        o.box = new("Frame", { BackgroundTransparency = 1, Visible = false, ZIndex = 3, Active = false }, layer)
+        o.stroke = thick(o.box, C.White, 1)
+        o.name = new("TextLabel", {
+            Size = UDim2.fromOffset(160, 12), AnchorPoint = Vector2.new(0.5, 1), BackgroundTransparency = 1, Font = FONT,
+            TextSize = 11, TextColor3 = C.White, TextStrokeTransparency = 0.4, Visible = false, ZIndex = 4, Active = false,
+        }, layer)
+        o.info = new("TextLabel", {
+            Size = UDim2.fromOffset(160, 12), AnchorPoint = Vector2.new(0.5, 0), BackgroundTransparency = 1, Font = FONT,
+            TextSize = 10, TextColor3 = C.Text, TextStrokeTransparency = 0.4, Visible = false, ZIndex = 4, Active = false,
+        }, layer)
+        o.hpBg = new("Frame", { BackgroundColor3 = C.Black, BorderSizePixel = 0, Visible = false, ZIndex = 2, Active = false }, layer)
+        o.hp = new("Frame", { BorderSizePixel = 0, ZIndex = 3, Active = false }, o.hpBg)
+        o.line = new("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, Visible = false, ZIndex = 2, Active = false }, layer)
+        return o
+    end
+    local function hide(o)
+        o.outline.Visible, o.box.Visible, o.name.Visible, o.info.Visible, o.hpBg.Visible, o.line.Visible = false, false, false, false, false, false
+        if o.hl then o.hl.Adornee = nil end
+    end
+    local function kill(o)
+        for _, k in ipairs({ "outline", "box", "name", "info", "hpBg", "line", "hl" }) do
+            if o[k] then pcall(function() o[k]:Destroy() end) end
+        end
+    end
+    hook(Players.PlayerRemoving, function(p) if objs[p] then kill(objs[p]) objs[p] = nil end end)
+    onCleanup(function() for _, o in pairs(objs) do kill(o) end pcall(function() layer:Destroy() end) end)
+
+    hook(RunService.RenderStepped, function()
+        local c = M.cam()
+        local used = {}
+        if State.ESP and c then
+            local vs = c.ViewportSize
+            local col = colorOf(State.ESPColor)
+            local hlN = 0
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if M.isEnemy(plr) then
+                    local ch, hum, root = M.charParts(plr)
+                    if ch then
+                        local head = ch:FindFirstChild("Head")
+                        local dist = (root.Position - c.CFrame.Position).Magnitude
+                        local vis = true
+                        if State.ESPVisOnly and head then vis = M.visible(head, ch) end
+                        if dist <= State.ESPMax and vis then
+                            local o = objs[plr]
+                            if not o then o = mk() objs[plr] = o end
+                            used[plr] = true
+                            local tp = c:WorldToViewportPoint((head and head.Position or root.Position) + Vector3.new(0, 0.7, 0))
+                            local bp = c:WorldToViewportPoint(root.Position - Vector3.new(0, 3.1, 0))
+                            if tp.Z > 0 and bp.Z > 0 then
+                                local h = math.abs(bp.Y - tp.Y)
+                                local w = h * 0.55
+                                local cx, y0 = (tp.X + bp.X) / 2, math.min(tp.Y, bp.Y)
+                                local x0 = cx - w / 2
+                                o.outline.Visible, o.box.Visible = State.ESPBox, State.ESPBox
+                                o.outline.Position, o.box.Position = UDim2.fromOffset(x0, y0), UDim2.fromOffset(x0, y0)
+                                o.outline.Size, o.box.Size = UDim2.fromOffset(w, h), UDim2.fromOffset(w, h)
+                                o.stroke.Color = col
+                                o.name.Visible = State.ESPName
+                                o.name.Text = plr.DisplayName
+                                o.name.Position = UDim2.fromOffset(cx, y0 - 2)
+                                o.info.Visible = State.ESPDist
+                                o.info.Text = math.floor(dist) .. "m"
+                                o.info.Position = UDim2.fromOffset(cx, y0 + h + 2)
+                                o.hpBg.Visible = State.ESPHealth
+                                o.hpBg.Position = UDim2.fromOffset(x0 - 5, y0 - 1)
+                                o.hpBg.Size = UDim2.fromOffset(3, h + 2)
+                                local frac = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
+                                o.hp.AnchorPoint = Vector2.new(0, 1)
+                                o.hp.Position = UDim2.new(0, 1, 1, -1)
+                                o.hp.Size = UDim2.new(1, -2, frac, -2)
+                                o.hp.BackgroundColor3 = Color3.fromHSV(frac * 0.33, 1, 1)
+                                if State.ESPTracers then
+                                    local ox, oy = vs.X / 2, vs.Y
+                                    local dx, dy = cx - ox, (y0 + h) - oy
+                                    o.line.Visible = true
+                                    o.line.BackgroundColor3 = col
+                                    o.line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1)
+                                    o.line.Position = UDim2.fromOffset((ox + cx) / 2, (oy + y0 + h) / 2)
+                                    o.line.Rotation = math.deg(math.atan2(dy, dx))
+                                else
+                                    o.line.Visible = false
+                                end
+                            else
+                                o.outline.Visible, o.box.Visible, o.name.Visible, o.info.Visible, o.hpBg.Visible, o.line.Visible = false, false, false, false, false, false
+                            end
+                            if State.ESPChams and hlN < 30 then
+                                hlN += 1
+                                if not o.hl then o.hl = new("Highlight", {}, ScreenGui) end
+                                o.hl.Adornee = ch
+                                o.hl.FillColor, o.hl.OutlineColor = col, col
+                                o.hl.FillTransparency = State.ESPFill / 100
+                                o.hl.OutlineTransparency = 0
+                                o.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                            elseif o.hl then
+                                o.hl.Adornee = nil
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        for plr, o in pairs(objs) do if not used[plr] then hide(o) end end
+    end)
+end
+
+----------------------------------------------------------------------
+-- WORLD: lighting / weather / thunder / accessories
+----------------------------------------------------------------------
+do
+    local orig, atm = {}, {}
+    M.flash = 0
+    hook(RunService.Heartbeat, function(dt)
+        M.flash = math.max(0, M.flash - dt * 2.5)
+        local d = {}
+        if State.CustomTime then d.ClockTime = State.ClockTime end
+        if State.Nighttime then
+            d.ClockTime = 0
+            d.Ambient, d.OutdoorAmbient, d.Brightness = rgb(28, 32, 58), rgb(28, 32, 58), 0.6
+        end
+        if State.Weather == "Storm" then
+            d.Ambient = d.Ambient or rgb(60, 64, 76)
+            d.OutdoorAmbient = d.OutdoorAmbient or rgb(60, 64, 76)
+            d.Brightness = 1
+        end
+        if State.AmbientOn then
+            local col = colorOf(State.AmbientColor)
+            d.Ambient, d.OutdoorAmbient = col, col
+        end
+        if State.Fullbright then
+            d.Ambient, d.OutdoorAmbient = rgb(200, 200, 200), rgb(200, 200, 200)
+            d.Brightness, d.ExposureCompensation = 2.5, 0.3
+        end
+        if State.NoShadows then d.GlobalShadows = false end
+        if State.NoFog then d.FogEnd, d.FogStart = 1e6, 1e6 end
+        if M.flash > 0 then
+            local base = d.ExposureCompensation or orig.ExposureCompensation or Lighting.ExposureCompensation
+            d.ExposureCompensation = base + M.flash * 2
+        end
+        for prop, val in pairs(d) do
+            if orig[prop] == nil then orig[prop] = Lighting[prop] end
+            if Lighting[prop] ~= val then Lighting[prop] = val end
+        end
+        for prop, o in pairs(orig) do
+            if d[prop] == nil then Lighting[prop] = o orig[prop] = nil end
+        end
+        for _, a in ipairs(Lighting:GetChildren()) do
+            if a:IsA("Atmosphere") then
+                if State.NoFog then
+                    if not atm[a] then atm[a] = { a.Density, a.Haze } end
+                    a.Density, a.Haze = 0, 0
+                elseif atm[a] then
+                    a.Density, a.Haze = atm[a][1], atm[a][2]
+                    atm[a] = nil
+                end
+            end
+        end
+    end)
+    onCleanup(function()
+        for prop, o in pairs(orig) do pcall(function() Lighting[prop] = o end) end
+        for a, v in pairs(atm) do pcall(function() a.Density, a.Haze = v[1], v[2] end) end
+    end)
+end
+
+do
+    local part, emit
+    local origWind
+    local function clear()
+        if part then pcall(function() part:Destroy() end) end
+        part, emit = nil, nil
+        if origWind ~= nil then pcall(function() workspace.GlobalWind = origWind end) origWind = nil end
+    end
+    onCleanup(clear)
+
+    local function configure()
+        local kind, amt, wind = State.Weather, State.WeatherAmount, State.Wind
+        local acc = Vector3.new(wind * 0.6, 0, wind * 0.2)
+        emit.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+        emit.EmissionDirection = Enum.NormalId.Bottom
+        emit.Acceleration = acc
+        emit.Rotation = NumberRange.new(0, 360)
+        emit.LockedToPart = false
+        if kind == "Snow" then
+            emit.Rate = math.max(1, amt * 8)
+            emit.Lifetime = NumberRange.new(5, 7)
+            emit.Speed = NumberRange.new(10, 16)
+            emit.SpreadAngle = Vector2.new(15, 15)
+            emit.Size = NumberSequence.new(0.3)
+            emit.Color = ColorSequence.new(C.White)
+            emit.Transparency = NumberSequence.new(0.2)
+            emit.LightEmission = 0.3
+            emit.Orientation = Enum.ParticleOrientation.FacingCamera
+            emit.RotSpeed = NumberRange.new(-40, 40)
+        else
+            local storm = kind == "Storm"
+            emit.Rate = math.max(1, amt * (storm and 18 or 12))
+            emit.Lifetime = NumberRange.new(1.2, 1.6)
+            emit.Speed = NumberRange.new(storm and 100 or 80, storm and 120 or 95)
+            emit.SpreadAngle = Vector2.new(3, 3)
+            emit.Size = NumberSequence.new(0.9)
+            emit.Squash = NumberSequence.new(-0.8)          -- если полосы выглядят криво, поменяй знак/значение
+            emit.Color = ColorSequence.new(rgb(170, 195, 255))
+            emit.Transparency = NumberSequence.new(0.5)
+            emit.LightEmission = 0.2
+            emit.Orientation = Enum.ParticleOrientation.VelocityParallel
+            emit.RotSpeed = NumberRange.new(0, 0)
+            emit.Acceleration = acc * (storm and 1.5 or 1)
+        end
+        emit.Enabled = true
+    end
+
+    local sig = ""
+    hook(RunService.RenderStepped, function()
+        pcall(function() workspace.GlobalWind = Vector3.new(State.Wind * 0.1, 0, 0) end)
+        if State.Wind > 0 and origWind == nil then origWind = Vector3.zero end
+        local kind = State.Weather
+        local c = M.cam()
+        if kind == "None" or not c then
+            if part then clear() sig = "" end
+            return
+        end
+        if not part or part.Parent ~= c then
+            if part then pcall(function() part:Destroy() end) end
+            part = new("Part", {
+                Name = "AbaddonWeather", Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+                Transparency = 1, Size = Vector3.new(110, 1, 110),
+            }, c)
+            emit = new("ParticleEmitter", { Rate = 0 }, part)
+            sig = ""
+        end
+        local s = kind .. State.WeatherAmount .. State.Wind
+        if s ~= sig then sig = s configure() end
+        part.CFrame = CFrame.new(c.CFrame.Position + Vector3.new(0, 45, 0))
+    end)
+end
+
+do -- thunder
+    task.spawn(function()
+        while alive do
+            task.wait(math.random(6, 16))
+            if alive and State.Thunder then
+                M.flash = 1.2
+                task.delay(0.18, function() M.flash = math.max(M.flash, 0.8) end)
+                if THUNDER_SOUND_ID ~= "" then
+                    task.delay(0.4 + math.random() * 1.2, function()
+                        pcall(function()
+                            local s = new("Sound", { SoundId = THUNDER_SOUND_ID, Volume = 1.2 }, workspace)
+                            s:Play()
+                            Debris:AddItem(s, 8)
+                        end)
+                    end)
+                end
+            end
+        end
+    end)
+end
+
+do -- accessories (клиентские, видны только тебе)
+    local objs, anim, animConn = {}, nil, nil
+    local function clear()
+        for _, o in ipairs(objs) do pcall(function() o:Destroy() end) end
+        objs, anim = {}, nil
+    end
+    local function part(name, size, shape, col)
+        local p = new("Part", {
+            Name = name, Size = size, Shape = shape or Enum.PartType.Block, Material = Enum.Material.Neon, Color = col,
+            CanCollide = false, CanQuery = false, CanTouch = false, Massless = true, CastShadow = false,
+        })
+        objs[#objs + 1] = p
+        return p
+    end
+    local function weld(p, to, c0)
+        local w = new("Weld", { Part0 = to, Part1 = p, C0 = c0 }, p)
+        p.Parent = to.Parent
+        return w
+    end
+
+    local function build()
+        clear()
+        local kind = State.Accessory
+        if kind == "None" then return end
+        local ch = LP.Character
+        if not ch then return end
+        local head, torso, root = ch:FindFirstChild("Head"), ch:FindFirstChild("Torso"), ch:FindFirstChild("HumanoidRootPart")
+        local col = colorOf(State.AccessoryColor)
+
+        if kind == "Halo" and head then
+            local p = part("Halo", Vector3.new(0.15, 2.2, 2.2), Enum.PartType.Cylinder, col)
+            local w = weld(p, head, CFrame.new(0, 1.1, 0) * CFrame.Angles(0, 0, math.rad(90)))
+            anim = function(t) w.C0 = CFrame.new(0, 1.1 + math.sin(t * 2) * 0.08, 0) * CFrame.Angles(0, 0, math.rad(90)) end
+        elseif kind == "Crown" and head then
+            local ws = {}
+            for i = 1, 6 do
+                local p = part("Crown", Vector3.new(0.25, 0.7, 0.25), nil, col)
+                ws[i] = weld(p, head, CFrame.new())
+            end
+            anim = function(t)
+                for i, w in ipairs(ws) do
+                    local a = (i / 6) * math.pi * 2 + t
+                    w.C0 = CFrame.new(math.cos(a) * 0.55, 0.85, math.sin(a) * 0.55) * CFrame.Angles(0, -a, 0)
+                end
+            end
+        elseif kind == "Wings" and torso then
+            local feathers = {}
+            local lens = { 2.8, 2.3, 1.8 }
+            for side = -1, 1, 2 do
+                for i, len in ipairs(lens) do
+                    local p = part("Wing", Vector3.new(0.12, len, 0.5), nil, col)
+                    feathers[#feathers + 1] = { w = weld(p, torso, CFrame.new()), side = side, i = i, len = len }
+                end
+            end
+            anim = function(t)
+                local flap = math.sin(t * 4) * 12
+                for _, f in ipairs(feathers) do
+                    f.w.C0 = CFrame.new(f.side * 0.9, 0.4, 0.6)
+                        * CFrame.Angles(0, f.side * math.rad(-35 - flap), f.side * math.rad(-(25 + f.i * 20)))
+                        * CFrame.new(0, f.len / 2, 0)
+                end
+            end
+        elseif kind == "Aura" and root then
+            local e = new("ParticleEmitter", {
+                Rate = 40, Lifetime = NumberRange.new(0.8, 1.2), Speed = NumberRange.new(2, 4), SpreadAngle = Vector2.new(180, 180),
+                Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.5), NumberSequenceKeypoint.new(1, 0) }),
+                Color = ColorSequence.new(col), LightEmission = 1,
+                Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 1) }),
+            }, root)
+            objs[#objs + 1] = e
+        elseif kind == "Trail" and torso then
+            local a0 = new("Attachment", { Position = Vector3.new(0, 1, 0) }, torso)
+            local a1 = new("Attachment", { Position = Vector3.new(0, -1, 0) }, torso)
+            local tr = new("Trail", {
+                Attachment0 = a0, Attachment1 = a1, Lifetime = 0.6, Color = ColorSequence.new(col), LightEmission = 1,
+                Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) }),
+            }, torso)
+            objs[#objs + 1], objs[#objs + 2], objs[#objs + 3] = a0, a1, tr
+        end
+    end
+    M.buildAccessory = build
+
+    hook(RunService.RenderStepped, function()
+        if anim then anim(os.clock()) end
+    end)
+    hook(LP.CharacterAdded, function() task.wait(0.6) build() end)
+    onCleanup(clear)
+end
+
+----------------------------------------------------------------------
+-- MISC: jump bug, speed, fly, noclip, inf jump, fov, crosshair, ...
+----------------------------------------------------------------------
+do -- jump bug: прыжок той же силы, но горизонтальная скорость в воздухе растёт с каждым прыжком
+    local boost, wasGround, gt = 0, true, 0
+    hook(RunService.Heartbeat, function(dt)
+        if not (State.JumpBug or State.AutoHop) then boost = 0 return end
+        local ch, hum, root = M.charParts(LP)
+        if not ch or hum.Sit or State.Fly or open or UIS:GetFocusedTextBox() then return end
+        local grounded = hum.FloorMaterial ~= Enum.Material.Air
+        local space = UIS:IsKeyDown(Enum.KeyCode.Space)
+        if State.AutoHop and space and grounded then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+        local v = root.AssemblyLinearVelocity
+        if wasGround and not grounded and v.Y > 5 and State.JumpBug then
+            boost = math.min(State.JBMax, boost + State.JBGain)
+        end
+        if grounded then gt += dt else gt = 0 end
+        if gt > 0.3 and not space then boost = 0 end
+        if State.JumpBug and not grounded and boost > 0 then
+            local md = hum.MoveDirection
+            if md.Magnitude > 0.05 then
+                local hv = md.Unit * (hum.WalkSpeed + boost)
+                root.AssemblyLinearVelocity = Vector3.new(hv.X, v.Y, hv.Z)
+            end
+        end
+        wasGround = grounded
+    end)
+end
+
+do -- speed
+    hook(RunService.Heartbeat, function(dt)
+        if not State.SpeedOn or State.Fly then return end
+        local ch, hum, root = M.charParts(LP)
+        if not ch then return end
+        local md = hum.MoveDirection
+        if md.Magnitude > 0.05 then root.CFrame = root.CFrame + md.Unit * State.Speed * dt end
+    end)
+end
+
+do -- noclip
+    local touched = setmetatable({}, { __mode = "k" })
+    hook(RunService.Stepped, function()
+        if State.Noclip then
+            local ch = LP.Character
+            if ch then
+                for _, p in ipairs(ch:GetDescendants()) do
+                    if p:IsA("BasePart") and p.CanCollide then touched[p] = true p.CanCollide = false end
+                end
+            end
+        elseif next(touched) then
+            for p in pairs(touched) do touched[p] = nil if p.Parent then p.CanCollide = true end end
+        end
+    end)
+end
+
+do -- fly
+    local bv
+    hook(RunService.RenderStepped, function()
+        local ch, hum, root = M.charParts(LP)
+        local c = M.cam()
+        if State.Fly and ch and c then
+            if not bv or bv.Parent ~= root then
+                if bv then bv:Destroy() end
+                bv = new("BodyVelocity", { MaxForce = Vector3.new(1e6, 1e6, 1e6), Velocity = Vector3.zero }, root)
+            end
+            local mv = Vector3.zero
+            if not UIS:GetFocusedTextBox() then
+                if UIS:IsKeyDown(Enum.KeyCode.W) then mv += c.CFrame.LookVector end
+                if UIS:IsKeyDown(Enum.KeyCode.S) then mv -= c.CFrame.LookVector end
+                if UIS:IsKeyDown(Enum.KeyCode.A) then mv -= c.CFrame.RightVector end
+                if UIS:IsKeyDown(Enum.KeyCode.D) then mv += c.CFrame.RightVector end
+                if UIS:IsKeyDown(Enum.KeyCode.Space) then mv += Vector3.new(0, 1, 0) end
+                if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then mv -= Vector3.new(0, 1, 0) end
+            end
+            bv.Velocity = mv.Magnitude > 0 and mv.Unit * State.FlySpeed or Vector3.zero
+        elseif bv then
+            bv:Destroy()
+            bv = nil
+        end
+    end)
+    onCleanup(function() if bv then pcall(function() bv:Destroy() end) end end)
+end
+
+hook(UIS.JumpRequest, function()
+    if State.InfJump then
+        local _, hum = M.charParts(LP)
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+do -- fov changer
+    pcall(function()
+        RunService:BindToRenderStep("AbaddonFOV", Enum.RenderPriority.Camera.Value + 2, function()
+            if State.FOVOn then
+                local c = M.cam()
+                if c then c.FieldOfView = State.FOV end
+            end
+        end)
+    end)
+    onCleanup(function() pcall(function() RunService:UnbindFromRenderStep("AbaddonFOV") end) end)
+end
+
+do -- crosshair
+    local bars = {}
+    for i = 1, 4 do
+        bars[i] = new("Frame", { BackgroundColor3 = C.White, BorderSizePixel = 0, Visible = false, ZIndex = 3, Active = false }, M.layer)
+        stroke(bars[i], C.Black)
+    end
+    hook(RunService.RenderStepped, function()
+        local c = M.cam()
+        local show = State.Crosshair and c ~= nil and not open
+        for i = 1, 4 do bars[i].Visible = show end
+        if not show then return end
+        local vs = c.ViewportSize
+        local cx, cy, g, s = vs.X / 2, vs.Y / 2, State.CrossGap, State.CrossSize
+        local col = colorOf(State.CrossColor)
+        for i = 1, 4 do bars[i].BackgroundColor3 = col end
+        bars[1].Size, bars[1].Position = UDim2.fromOffset(2, s), UDim2.fromOffset(cx - 1, cy - g - s)
+        bars[2].Size, bars[2].Position = UDim2.fromOffset(2, s), UDim2.fromOffset(cx - 1, cy + g)
+        bars[3].Size, bars[3].Position = UDim2.fromOffset(s, 2), UDim2.fromOffset(cx - g - s, cy - 1)
+        bars[4].Size, bars[4].Position = UDim2.fromOffset(s, 2), UDim2.fromOffset(cx + g, cy - 1)
+    end)
+end
+
+do -- anti-afk / fps
+    local afk
+    function M.setAFK(on)
+        if afk then afk:Disconnect() afk = nil end
+        if on then
+            afk = LP.Idled:Connect(function()
+                pcall(function() VirtualUser:CaptureController() VirtualUser:ClickButton2(Vector2.new()) end)
+            end)
+        end
+    end
+    onCleanup(function() if afk then afk:Disconnect() end end)
+    function M.setFPS(on)
+        if not setfpscap then logWarn("setfpscap not supported") return end
+        pcall(setfpscap, on and 999 or 60)
+    end
+    onCleanup(function() if setfpscap then pcall(setfpscap, 60) end end)
+end
+
+do -- watermark
+    local Mark = new("Frame", {
+        Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, AnchorPoint = Vector2.new(1, 0),
+        Position = UDim2.new(1, -12, 0, 10), BackgroundColor3 = C.Bg, BorderSizePixel = 0, ZIndex = 300,
+    }, ScreenGui)
+    stroke(Mark, C.Black)
+    local line = new("Frame", { Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = C.White, BorderSizePixel = 0, ZIndex = 301 }, Mark)
+    new("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, rgb(60, 60, 60)), ColorSequenceKeypoint.new(0.5, C.White), ColorSequenceKeypoint.new(1, rgb(60, 60, 60)),
+        }),
+    }, line)
+    local lbl = new("TextLabel", {
+        Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, RichText = true,
+        Font = FONT, TextSize = 11, TextColor3 = C.Text, ZIndex = 301,
+    }, Mark)
+    new("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 2) }, lbl)
+    local frames, acc = 0, 0
+    local fps = 60
+    hook(RunService.RenderStepped, function(dt)
+        frames += 1
+        acc += dt
+        if acc >= 0.5 then fps = math.floor(frames / acc + 0.5) frames, acc = 0, 0 end
+    end)
+    every(0.5, function()
+        Mark.Visible = State.Watermark
+        local ping = 0
+        pcall(function() ping = math.floor(LP:GetNetworkPing() * 1000) end)
+        lbl.Text = string.format('<font color="rgb(255,255,255)">ab</font><font color="rgb(110,110,110)">addon</font> | %s | %d fps | %dms | hvh', LP.Name, fps, ping)
+    end)
+end
+
+do -- remote logger: помогает увидеть аргументы CheckFire / ProjectileRender / CheckShot / ProjectileFinished / GunShot
+    local NAMES = { CheckFire = true, ProjectileRender = true, CheckShot = true, ProjectileFinished = true, GunShot = true }
+    local function fmt(v)
+        local t = typeof(v)
+        if t == "string" then return '"' .. v:sub(1, 24) .. '"' end
+        if t == "Instance" then return v.ClassName .. ":" .. v.Name end
+        if t == "number" then return string.format("%.3g", v) end
+        return t .. ":" .. tostring(v):sub(1, 24)
+    end
+    _G.AbaddonRL = function(self, ...)
+        if not alive or not State.RemoteLog then return end
+        if typeof(self) ~= "Instance" or not NAMES[self.Name] then return end
+        local a = table.pack(...)
+        local nm = self.Name
+        task.defer(function()
+            local out = {}
+            for i = 1, math.min(a.n, 8) do out[i] = fmt(a[i]) end
+            local line = nm .. "(" .. table.concat(out, ", ") .. ")"
+            print("[remote] " .. line)
+            log(line, rgb(150, 170, 255))
+        end)
+    end
+    onCleanup(function() _G.AbaddonRL = nil end)
+
+    M.remoteHookOk = hookmetamethod ~= nil and getnamecallmethod ~= nil
+    if M.remoteHookOk and not _G.AbaddonRLHook then
+        _G.AbaddonRLHook = true
+        local old
+        local function f(self, ...)
+            local m = getnamecallmethod()
+            if m == "FireServer" and _G.AbaddonRL and not (checkcaller and checkcaller()) then
+                pcall(_G.AbaddonRL, self, ...)
+                if setnamecallmethod then setnamecallmethod(m) end
+            end
+            return old(self, ...)
+        end
+        old = hookmetamethod(game, "__namecall", newcclosure and newcclosure(f) or f)
+    end
+end
+
+local function rejoin() TeleportService:Teleport(game.PlaceId, LP) end
+local function serverHop()
+    local ok, res = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)))
+    end)
+    if not ok or not res or not res.data then logErr("Server hop: request failed") return end
+    local list = {}
+    for _, s in ipairs(res.data) do
+        if s.playing < s.maxPlayers and s.id ~= game.JobId then list[#list + 1] = s.id end
+    end
+    if #list == 0 then logWarn("Server hop: no free servers") return end
+    TeleportService:TeleportToPlaceInstance(game.PlaceId, list[math.random(#list)], LP)
+end
+
+----------------------------------------------------------------------
+-- PAGES
+----------------------------------------------------------------------
+do -- RAGE
+    local s = section(RagePage, "Aimbot")
+    toggle(s, "Enabled", "RageOn", function() M.ensureSilent() end)
+    dropdown(s, "Mode", { "Silent", "Camera", "Hybrid" }, "RageMode", function() M.ensureSilent() end)
+    dropdown(s, "Hitbox", { "Head", "Torso", "Root", "Closest", "Random" }, "RageHitbox")
+    dropdown(s, "Target priority", { "Closest FOV", "Closest Distance", "Lowest Health", "Highest Health" }, "RageTarget")
+    slider(s, "FOV (px)", 20, 2000, "RageFOV")
+    toggle(s, "Visible check", "RageVisible")
+    toggle(s, "Predict movement + bullet drop", "RagePredict")
+    toggle(s, "Ignore forcefield", "RageSkipFF")
+    info(s, "Silent: the projectile module's Cast is patched so shots fly at the target. Camera: view snaps to the target. Hybrid: both.", 40)
+
+    s = section(RagePage, "Auto fire")
+    toggle(s, "Auto-Fire", "RageAutoFire")
+    slider(s, "Delay (ms)", 0, 500, "RageDelay")
+    toggle(s, "Auto reload when no target", "RageAutoReload")
+
+    s = section(RagePage, "Hitbox expander")
+    toggle(s, "Expand enemy Head / Root", "RageHB")
+    slider(s, "Size (studs)", 2, 20, "RageHBSize")
+
+    s = section(RagePage, "Anti-aim")
+    toggle(s, "Enabled", "AAOn")
+    dropdown(s, "Yaw", { "Spin", "Jitter", "Spin + Jitter", "Backward", "Sideways", "Random" }, "AAMode")
+    slider(s, "Spin speed (deg/frame)", 1, 120, "AASpeed")
+    slider(s, "Jitter range (deg)", 10, 180, "AAJitter")
+    dropdown(s, "Pitch (R6 RootJoint)", { "None", "Down", "Up", "Jitter", "Spin" }, "AAPitch")
+
+    s = section(RagePage, "Fake lag")
+    toggle(s, "Enabled", "FakeLag", function(v) M.setFakeLag(v) end)
+    slider(s, "Choke (ms)", 20, 1000, "FakeLagOn")
+    slider(s, "Release (ms)", 20, 500, "FakeLagOff")
+
+    s = section(RagePage, "Camera")
+    toggle(s, "Third person", "ThirdPerson")
+    slider(s, "Distance", 3, 40, "TPDistance")
+end
+
+do -- LEGIT
+    local s = section(LegitPage, "Aimbot")
+    toggle(s, "Enabled", "LegitOn")
+    dropdown(s, "Key", { "RMB", "LMB", "MB3", "Q", "E", "LeftShift", "LeftAlt", "Always" }, "LegitKey")
+    dropdown(s, "Bone", { "Head", "Torso", "Closest", "Random" }, "LegitBone")
+    slider(s, "FOV (px)", 10, 800, "LegitFOV")
+    slider(s, "Smoothness", 0, 98, "LegitSmooth")
+    toggle(s, "Visible check", "LegitVisible")
+    toggle(s, "Predict movement", "LegitPredict")
+    toggle(s, "Sticky target", "LegitSticky")
+    toggle(s, "Draw FOV circle", "LegitDraw")
+    toggle(s, "Team check (aimbots, trigger, ESP)", "TeamCheck")
+
+    s = section(LegitPage, "Triggerbot")
+    toggle(s, "Enabled", "Trigger")
+    slider(s, "Delay (ms)", 0, 300, "TriggerDelay")
+
+    s = section(LegitPage, "Wallhack / ESP")
+    toggle(s, "Enabled", "ESP")
+    toggle(s, "Chams (through walls)", "ESPChams")
+    slider(s, "Chams fill transparency (%)", 0, 100, "ESPFill")
+    toggle(s, "Boxes", "ESPBox")
+    toggle(s, "Names", "ESPName")
+    toggle(s, "Health bar", "ESPHealth")
+    toggle(s, "Distance", "ESPDist")
+    toggle(s, "Tracers", "ESPTracers")
+    toggle(s, "Only visible players", "ESPVisOnly")
+    dropdown(s, "Color", COLOR_NAMES, "ESPColor")
+    slider(s, "Max distance", 100, 5000, "ESPMax")
+end
+
+do -- WORLD
+    local s = section(WorldPage, "Time")
+    toggle(s, "Custom time", "CustomTime")
+    slider(s, "Clock time", 0, 24, "ClockTime")
+    toggle(s, "Nighttime", "Nighttime")
+
+    s = section(WorldPage, "Lighting")
+    toggle(s, "Fullbright", "Fullbright")
+    toggle(s, "No shadows", "NoShadows")
+    toggle(s, "No fog", "NoFog")
+    toggle(s, "Custom ambient", "AmbientOn")
+    dropdown(s, "Ambient color", COLOR_NAMES, "AmbientColor")
+
+    s = section(WorldPage, "Weather")
+    dropdown(s, "Weather", { "None", "Rain", "Snow", "Storm" }, "Weather")
+    slider(s, "Intensity", 1, 100, "WeatherAmount")
+    slider(s, "Wind", 0, 100, "Wind")
+    toggle(s, "Thunder (lightning flashes)", "Thunder")
+
+    s = section(WorldPage, "Character accessories (local)")
+    dropdown(s, "Accessory", { "None", "Halo", "Crown", "Wings", "Aura", "Trail" }, "Accessory", function() M.buildAccessory() end)
+    dropdown(s, "Color", COLOR_NAMES, "AccessoryColor", function() M.buildAccessory() end)
+end
+
+do -- MISC
+    local s = section(MiscPage, "Jump bug")
+    toggle(s, "Jump bug", "JumpBug")
+    slider(s, "Speed gain per jump", 5, 80, "JBGain")
+    slider(s, "Max extra speed", 20, 200, "JBMax")
+    toggle(s, "Auto hop (hold space)", "AutoHop")
+    info(s, "Jump height stays the same, but horizontal air speed grows with every jump and resets after you stay on the ground.", 40)
+
+    s = section(MiscPage, "Movement")
+    toggle(s, "Speed (CFrame)", "SpeedOn")
+    slider(s, "Extra speed", 1, 120, "Speed")
+    toggle(s, "Infinite jump", "InfJump")
+    toggle(s, "Noclip", "Noclip")
+    toggle(s, "Fly", "Fly")
+    slider(s, "Fly speed", 10, 250, "FlySpeed")
+
+    s = section(MiscPage, "View")
+    toggle(s, "Custom FOV", "FOVOn")
+    slider(s, "FOV", 40, 120, "FOV")
+    toggle(s, "Crosshair", "Crosshair")
+    slider(s, "Crosshair size", 2, 30, "CrossSize")
+    slider(s, "Crosshair gap", 0, 20, "CrossGap")
+    dropdown(s, "Crosshair color", COLOR_NAMES, "CrossColor")
+
+    s = section(MiscPage, "Utility")
+    toggle(s, "Unlock FPS", "UnlockFPS", function(v) M.setFPS(v) end)
+    toggle(s, "Anti-AFK", "AntiAFK", function(v) M.setAFK(v) end)
+    toggle(s, "Watermark", "Watermark")
+    toggle(s, "Remote logger (CheckFire, GunShot, ...)", "RemoteLog", function(v)
+        if v and not M.remoteHookOk then logWarn("Remote logger: executor has no hookmetamethod") end
+    end)
+    button(s, "Rejoin", rejoin)
+    button(s, "Server hop", serverHop)
+end
+
+----------------------------------------------------------------------
+-- SETTINGS: menu key, blur, config, unload
+----------------------------------------------------------------------
+do
+    local blur = new("BlurEffect", { Name = "AbaddonBlur", Size = 0 }, Lighting)
+    onCleanup(function() pcall(function() blur:Destroy() end) end)
+
+    local function setMenu(v)
+        if open == v then return end
+        open = v
+        if v then
+            Panel.Visible, Overlay.Visible = true, true
+            tween(Panel, 0.2, { GroupTransparency = 0 })
+            tween(Overlay, 0.2, { BackgroundTransparency = 0.55 })
+            tween(blur, 0.25, { Size = State.Blur and 14 or 0 })
+        else
+            if closeOpenDD then pcall(closeOpenDD) end
+            tween(Panel, 0.15, { GroupTransparency = 1 })
+            tween(Overlay, 0.15, { BackgroundTransparency = 1 })
+            tween(blur, 0.2, { Size = 0 })
+            task.delay(0.17, function()
+                if not open then Panel.Visible, Overlay.Visible = false, false end
+            end)
+        end
+    end
+    M.setMenu = setMenu
+    CloseBtn.MouseButton1Click:Connect(function() setMenu(false) end)
+
+    M.listening = false
+    hook(UIS.InputBegan, function(i, gp)
+        if M.listening then
+            if i.UserInputType == Enum.UserInputType.Keyboard then
+                M.listening = false
+                if i.KeyCode ~= Enum.KeyCode.Escape then State.MenuKey = i.KeyCode.Name end
+                M.updateBindBtn()
+            end
+            return
+        end
+        if gp then return end
+        if i.UserInputType == Enum.UserInputType.Keyboard and i.KeyCode.Name == State.MenuKey then setMenu(not open) end
+    end)
+
+    -- config
+    local function applyData(data)
+        for k, v in pairs(data) do
+            if DEFAULTS[k] ~= nil and type(v) == type(DEFAULTS[k]) then
+                if Reg[k] then pcall(Reg[k], v) else State[k] = v end
+            end
+        end
+    end
+    local function saveCfg()
+        if not writefile then logErr("writefile not supported") return end
+        local data = {}
+        for k, v in pairs(State) do
+            local t = type(v)
+            if t == "boolean" or t == "number" or t == "string" then data[k] = v end
+        end
+        local ok = pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(data)) end)
+        if ok then logOk("Config saved") else logErr("Config save failed") end
+    end
+    local function loadCfg(silent)
+        if not (readfile and isfile) then if not silent then logErr("readfile not supported") end return end
+        if not isfile(CONFIG_FILE) then if not silent then logWarn("No config file") end return end
+        local ok, data = pcall(function() return HttpService:JSONDecode(readfile(CONFIG_FILE)) end)
+        if not ok or type(data) ~= "table" then logErr("Config read failed") return end
+        applyData(data)
+        logOk("Config loaded")
+    end
+
+    local s = section(SetPage, "Menu")
+    local bindBtn
+    bindBtn = button(s, "", function()
+        M.listening = true
+        bindBtn.Text = "press a key...  (esc = cancel)"
+    end)
+    function M.updateBindBtn() bindBtn.Text = "Menu key: " .. State.MenuKey:lower() .. "   [click to change]" end
+    Reg.MenuKey = function(v) State.MenuKey = v M.updateBindBtn() end
+    M.updateBindBtn()
+    toggle(s, "Background blur", "Blur", function(v)
+        if open then tween(blur, 0.2, { Size = v and 14 or 0 }) end
+    end)
+
+    s = section(SetPage, "Config")
+    button(s, "Save config", saveCfg)
+    button(s, "Load config", function() loadCfg(false) end)
+    button(s, "Reset to defaults", function() applyData(DEFAULTS) logOk("Config reset") end)
+    button(s, "Delete config file", function()
+        if delfile and isfile and isfile(CONFIG_FILE) then pcall(delfile, CONFIG_FILE) logOk("Config deleted")
+        else logWarn("Nothing to delete") end
+    end, true)
+
+    s = section(SetPage, "Script")
+    button(s, "Unload script", function()
+        if _G.AbaddonCleanup then _G.AbaddonCleanup() end
+    end, true)
+
+    ------------------------------------------------------------------
+    -- boot
+    ------------------------------------------------------------------
+    task.spawn(function()
+        task.wait(0.3)
+        pcall(loadCfg, true)
+        setMenu(true)
+        logOk("abaddon hvh loaded  |  " .. State.MenuKey .. " = menu")
+    end)
+end

